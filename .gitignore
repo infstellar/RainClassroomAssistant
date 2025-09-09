@@ -5,3 +5,6 @@ build
 build.cmd
 downloads
 .vscode
+ai_answers_cache/
+.history/
+ai_config.json

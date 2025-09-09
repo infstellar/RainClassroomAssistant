@@ -98,21 +98,31 @@ class PPTManager:
         pdf_name = self.title + ".pdf"
         for slide in self.slides:
             image_name = self.imgpath + "\\" + str(slide["index"]) + ".jpg"
-            md5 = self.get_md5(image_name)
-            self.md5_list.append(md5)
-            if "problem" in slide.keys():
-                problem = slide["problem"]
-                # print(problem)
-                img = Image.open(image_name)
-                font = ImageFont.truetype("C:\\Windows\\Fonts\\msyh.ttc", 30)
-                draw = ImageDraw.Draw(img)
-                draw.text(
-                    (50, 50),
-                    str(problem["answers"]),
-                    fill=(255, 0, 0),
-                    font=font,
-                )
-                img.save(image_name)
+            
+            # 检查图片文件是否存在
+            if not os.path.exists(image_name):
+                print(f"警告: 图片文件不存在，跳过: {image_name}")
+                continue
+                
+            try:
+                md5 = self.get_md5(image_name)
+                self.md5_list.append(md5)
+                if "problem" in slide.keys():
+                    problem = slide["problem"]
+                    # print(problem)
+                    img = Image.open(image_name)
+                    font = ImageFont.truetype("C:\\Windows\\Fonts\\msyh.ttc", 30)
+                    draw = ImageDraw.Draw(img)
+                    draw.text(
+                        (50, 50),
+                        str(problem["answers"]),
+                        fill=(255, 0, 0),
+                        font=font,
+                    )
+                    img.save(image_name)
+            except Exception as e:
+                print(f"处理图片时发生错误: {image_name}, 错误: {e}")
+                continue
         with open(self.imgpath + "\\md5.txt", "w") as f:
             for md5 in self.md5_list:
                 f.write(md5 + "\n")
@@ -136,8 +146,18 @@ class PPTManager:
         ppt.set_author("RainClassroom")
         for slide in self.slides:
             image_name = self.imgpath + "\\" + str(slide["index"]) + ".jpg"
-            ppt.add_page()
-            ppt.image(image_name, 0, 0, h=self.height, w=self.width)
+            
+            # 检查图片文件是否存在
+            if not os.path.exists(image_name):
+                print(f"警告: 生成PDF时图片文件不存在，跳过: {image_name}")
+                continue
+                
+            try:
+                ppt.add_page()
+                ppt.image(image_name, 0, 0, h=self.height, w=self.width)
+            except Exception as e:
+                print(f"添加图片到PDF时发生错误: {image_name}, 错误: {e}")
+                continue
         if os.path.exists(self.lessondownloadpath + "\\" + pdf_name):
             pdf_name = self.title + str(self.timeinfo) + ".pdf"
         ppt.output(self.lessondownloadpath + "\\" + pdf_name)
@@ -153,7 +173,7 @@ class PPTManager:
             return None, None
         self.download()
         pdfname = self.generate_ppt()
-        self.delete_cache()
+        # self.delete_cache()
         usetime = round(time.time() - float(self.timestamp), 4)
         del self.title_dict[self.title]
         return pdfname, usetime
@@ -175,9 +195,66 @@ class PPTManager:
             if url == "":
                 return
             index = slide["index"]
-            image_name = self.imgpath + "\\" + str(index) + ".jpg"
-            with open(image_name, "wb") as f:
-                f.write(requests.get(url).content)
+            final_image_name = self.imgpath + "\\" + str(index) + ".jpg"
+            temp_image_name = self.imgpath + "\\" + str(index) + "_temp"
+            
+            try:
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()  # 检查HTTP状态码
+                
+                # 检查响应内容是否为图片
+                content_type = response.headers.get('content-type', '')
+                if not content_type.startswith('image/'):
+                    print(f"警告: URL {url} 返回的不是图片格式，content-type: {content_type}")
+                    return
+                
+                content = response.content
+                if len(content) < 10:
+                    print(f"警告: 下载的文件内容过小: {url}")
+                    return
+                
+                # 先保存为临时文件
+                with open(temp_image_name, "wb") as f:
+                    f.write(content)
+                    
+                # 使用PIL打开并验证图片，然后转换为JPEG格式
+                try:
+                    with Image.open(temp_image_name) as img:
+                        # 验证图片完整性
+                        img.verify()
+                        
+                    # 重新打开图片进行格式转换（verify后需要重新打开）
+                    with Image.open(temp_image_name) as img:
+                        # 如果是RGBA模式，转换为RGB（JPEG不支持透明度）
+                        if img.mode in ('RGBA', 'LA', 'P'):
+                            # 创建白色背景
+                            background = Image.new('RGB', img.size, (255, 255, 255))
+                            if img.mode == 'P':
+                                img = img.convert('RGBA')
+                            background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                            img = background
+                        elif img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        
+                        # 保存为JPEG格式
+                        img.save(final_image_name, 'JPEG', quality=95)
+                        
+                except Exception as e:
+                    print(f"图片处理失败: {temp_image_name}, 错误: {e}")
+                    return
+                finally:
+                    # 清理临时文件
+                    if os.path.exists(temp_image_name):
+                        os.remove(temp_image_name)
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"下载图片失败: {url}, 错误: {e}")
+            except Exception as e:
+                print(f"处理图片时发生错误: {url}, 错误: {e}")
+                # 清理可能存在的文件
+                for cleanup_file in [temp_image_name, final_image_name]:
+                    if os.path.exists(cleanup_file):
+                        os.remove(cleanup_file)
 
         def run(self):
             for slide in self.slides:

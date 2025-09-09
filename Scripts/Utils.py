@@ -133,12 +133,48 @@ def get_initial_data(old_config=None):
         "sign_config": {
             "delay_time": {"type": 1, "custom": {"time": 120, "cutoff": 120}}
         },
+        # AI分析配置默认值
+        "enable_ai_analysis": False,
+        "openai_api_key": "",
+        "openai_api_base": "https://api.openai.com/v1",
+        "openai_model": "gpt-4-vision-preview",
+        "ai_analysis_settings": {
+            "max_retries": 3,
+            "request_timeout": 30,
+            "delay_between_requests": 1
+        }
     }
 
     if old_config:
         for key in old_config:
             if key in initial_data:
                 initial_data[key] = old_config[key]
+    
+    # 尝试加载AI配置文件
+    try:
+        # 查找ai_config.json文件
+        possible_paths = [
+            os.path.join(os.path.dirname(__file__), '..', 'ai_config.json'),  # 项目根目录
+            os.path.join(get_config_dir(), 'ai_config.json'),  # 配置目录
+            'ai_config.json'  # 当前目录
+        ]
+        
+        ai_config_loaded = False
+        for ai_config_path in possible_paths:
+            if os.path.exists(ai_config_path):
+                with open(ai_config_path, 'r', encoding='utf-8') as f:
+                    ai_config = json.load(f)
+                # 合并AI配置到主配置
+                for key, value in ai_config.items():
+                    initial_data[key] = value
+                ai_config_loaded = True
+                break
+        
+        if not ai_config_loaded:
+            print("未找到ai_config.json文件，使用默认AI配置")
+            
+    except Exception as e:
+        print(f"加载AI配置文件失败: {e}")
 
     return initial_data
 

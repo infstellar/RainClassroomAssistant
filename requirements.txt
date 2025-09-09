@@ -5,9 +5,11 @@ urllib3
 websocket_client
 fpdf
 numpy
-deepdiff
+deepDiff
 Pillow
 PyPDF2
 win10toast; platform_system=='Windows'
 pyinstaller
 pre-commit
+openai>=1.0.0
+typing_extensions>=4.15.0

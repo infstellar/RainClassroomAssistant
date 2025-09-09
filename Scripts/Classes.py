@@ -8,6 +8,7 @@ import requests
 import websocket
 
 from Scripts.PPTManager import PPTManager
+from Scripts.AIAnswerAnalyzer import AIAnswerAnalyzer
 from Scripts.Utils import (
     calculate_waittime,
     dict_result,
@@ -44,13 +45,24 @@ class Lesson:
         self.user_uname = rtn["name"]
         self.main_ui = main_ui
         # self.pptmanager_dict = {}
+        
+        # AI答案分析器延迟初始化
+        self._ai_analyzer = None
+
+    @property
+    def ai_analyzer(self):
+        """延迟初始化AI答案分析器"""
+        if self._ai_analyzer is None:
+            self._ai_analyzer = AIAnswerAnalyzer(self.config, self.add_message)
+        return self._ai_analyzer
 
     def _download(self, data):
         data["title"] = data["title"].replace("/", "_").strip()
         self.print_problems(data)
         self.add_message("开始下载ppt : " + data["title"] + ".pdf", 0)
         try:
-            pdfname, usetime = PPTManager(data, self.lessonname).start()
+            ppt_manager = PPTManager(data, self.lessonname)
+            pdfname, usetime = ppt_manager.start()
             if pdfname is None or usetime is None:
                 if is_debug():
                     self.add_message(
@@ -58,9 +70,47 @@ class Lesson:
                     )
                 return
             self.add_message("下载ppt成功 : " + pdfname + f"，耗时{usetime}秒", 0)
+            
+            # PPT下载完成后，启动AI分析
+            self._start_ai_analysis(data, ppt_manager)
+            
         except Exception as e:
             self.add_message("下载ppt失败 : " + data["title"] + ".pdf", 0)
             self.add_message(traceback.format_exc(), 0)
+            
+    def _start_ai_analysis(self, data, ppt_manager):
+        """启动AI分析"""
+        try:
+            # 检查是否启用AI分析
+            if not self.config.get('enable_ai_analysis', False):
+                return
+                
+            presentation_title = data["title"]
+            slides_data = data["slides"]
+            
+            # 构建图片缓存路径
+            img_cache_path = ppt_manager.imgpath
+            
+            # 定义分析完成回调
+            def analysis_callback(lesson_name, title, answers_cache):
+                if answers_cache:
+                    self.add_message(f"AI分析完成: {title}，共分析 {len(answers_cache)} 个问题", 0)
+                else:
+                    self.add_message(f"AI分析完成: {title}，未找到问题或分析失败", 0)
+            
+            # 启动AI分析
+            self.ai_analyzer.analyze_presentation(
+                self.lessonname,
+                presentation_title,
+                slides_data,
+                img_cache_path,
+                analysis_callback
+            )
+            
+            self.add_message(f"已启动AI分析: {presentation_title}", 0)
+            
+        except Exception as e:
+            self.add_message(f"启动AI分析失败: {str(e)}", 0)
 
     def download_ppt(self, presentationid):
         threading.Thread(
@@ -97,6 +147,19 @@ class Lesson:
         problems = [problem["problem"] for problem in slides]
         for i in range(len(problems)):
             problems[i]["index"] = index[i]
+            
+        # 使用AI缓存的答案覆盖原始答案
+        if self.config.get('enable_ai_analysis', False):
+            try:
+                presentation_title = data["title"].replace("/", "_").strip()
+                problems = self.ai_analyzer.get_cached_answers_for_problems(
+                    self.lessonname,
+                    presentation_title,
+                    problems
+                )
+            except Exception as e:
+                self.add_message(f"应用AI缓存答案失败: {str(e)}", 0)
+            
         return problems
 
     def answer_questions(self, problemid, problemtype, answer, limit):
