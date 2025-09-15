@@ -148,24 +148,56 @@ class Lesson:
         for i in range(len(problems)):
             problems[i]["index"] = index[i]
             
-        # 使用AI缓存的答案覆盖原始答案
-        if self.config.get('enable_ai_analysis', False):
-            try:
-                presentation_title = data["title"].replace("/", "_").strip()
-                problems = self.ai_analyzer.get_cached_answers_for_problems(
-                    self.lessonname,
-                    presentation_title,
-                    problems
-                )
-            except Exception as e:
-                self.add_message(f"应用AI缓存答案失败: {str(e)}", 0)
-            
         return problems
 
     def answer_questions(self, problemid, problemtype, answer, limit):
         # 回答问题
         print(f"problemtype: {problemtype}")
         print(f"answer: {answer}")
+        
+        # 如果answer为空或转bool为false，尝试使用AI缓存答案覆盖
+        if not answer and self.config.get('enable_ai_analysis', False):
+            try:
+                # 从problems_ls中找到对应的问题，获取其slide index
+                current_problem = None
+                for problem in self.problems_ls:
+                    if problem.get("problemId") == problemid:
+                        current_problem = problem
+                        break
+                
+                if current_problem and current_problem.get("index"):
+                    slide_index = current_problem["index"]
+                    
+                    # 需要获取presentation_title，从当前问题所属的presentation获取
+                    # 遍历所有已下载的presentation来找到包含此问题的presentation
+                    for presentationid in getattr(self, 'downloaded_presentations', set()):
+                        try:
+                            ppt_data = self._get_ppt(presentationid)
+                            presentation_title = ppt_data["title"].replace("/", "_").strip()
+                            
+                            # 检查这个presentation是否包含当前问题
+                            slides = [slide for slide in ppt_data["slides"] if "problem" in slide.keys()]
+                            slide_indices = [slide["index"] for slide in slides]
+                            
+                            if slide_index in slide_indices:
+                                # 找到了包含此问题的presentation，尝试获取AI缓存答案
+                                cached_answers = self.ai_analyzer.load_cached_answers(
+                                    self.lessonname,
+                                    presentation_title
+                                )
+                                
+                                if cached_answers and str(slide_index) in cached_answers:
+                                    ai_answer = cached_answers[str(slide_index)]
+                                    if ai_answer:  # 确保AI答案不为空
+                                        answer = ai_answer
+                                        self.add_message(f"使用AI缓存答案 - 问题ID {problemid}, 幻灯片 {slide_index}: {ai_answer}", 0)
+                                        break
+                        except Exception as e:
+                            continue  # 如果某个presentation获取失败，继续尝试下一个
+                            
+            except Exception as e:
+                self.add_message(f"获取AI缓存答案失败: {str(e)}", 0)
+        
         if answer and problemtype != 3:
             wait_time = calculate_waittime(
                 limit,
@@ -274,12 +306,21 @@ class Lesson:
             current_presentation = data["presentation"]
             if current_presentation not in presentations:
                 presentations.append(current_presentation)
+            
+            # 初始化已下载的presentation集合（如果不存在）
+            if not hasattr(self, 'downloaded_presentations'):
+                self.downloaded_presentations = set()
+            
             for presentationid in presentations:
                 # print(presentationid)
                 self.problems_ls.extend(self.get_problems(presentationid))
                 for problem in self.problems_ls:
                     self.problems_dict[problem["index"]] = problem["answers"]
-                self.download_ppt(presentationid)
+                
+                # 检查是否已经下载过此presentation
+                if presentationid not in self.downloaded_presentations:
+                    self.download_ppt(presentationid)
+                    self.downloaded_presentations.add(presentationid)
             self.unlocked_problem = data["unlockedproblem"]
             for problemid in self.unlocked_problem:
                 self._current_problem(wsapp, problemid)
@@ -294,12 +335,26 @@ class Lesson:
             self.problems_ls.extend(self.get_problems(data["presentation"]))
             for problem in self.problems_ls:
                 self.problems_dict[problem["index"]] = problem["answers"]
-            self.download_ppt(data["presentation"])
+            
+            # 检查是否已经下载过此presentation
+            if not hasattr(self, 'downloaded_presentations'):
+                self.downloaded_presentations = set()
+            
+            if data["presentation"] not in self.downloaded_presentations:
+                self.download_ppt(data["presentation"])
+                self.downloaded_presentations.add(data["presentation"])
         elif op == "presentationcreated":
             self.problems_ls.extend(self.get_problems(data["presentation"]))
             for problem in self.problems_ls:
                 self.problems_dict[problem["index"]] = problem["answers"]
-            self.download_ppt(data["presentation"])
+            
+            # 检查是否已经下载过此presentation
+            if not hasattr(self, 'downloaded_presentations'):
+                self.downloaded_presentations = set()
+            
+            if data["presentation"] not in self.downloaded_presentations:
+                self.download_ppt(data["presentation"])
+                self.downloaded_presentations.add(data["presentation"])
         elif op == "newdanmu" and self.config["auto_danmu"]:
             current_content = data["danmu"].lower()
             uid = data["userid"]

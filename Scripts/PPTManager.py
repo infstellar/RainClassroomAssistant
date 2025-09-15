@@ -17,7 +17,9 @@ class PPTManager:
     def __init__(self, data, lessonname, downloadpath="downloads"):
         self.lessonname = self.validateTitle(lessonname)
         self.title = self.validateTitle(data["title"]).strip()
-        self.title_dict[self.title] = 1
+        # 安全设置title_dict，避免并发问题
+        if self.title not in self.title_dict:
+            self.title_dict[self.title] = 1
         self.timestamp = str(time.time())
         self.timeinfo = time.strftime(
             "%Y%m%d-%H%M%S", time.localtime(float(self.timestamp))
@@ -175,7 +177,9 @@ class PPTManager:
         pdfname = self.generate_ppt()
         # self.delete_cache()
         usetime = round(time.time() - float(self.timestamp), 4)
-        del self.title_dict[self.title]
+        # 安全删除title_dict中的键，避免KeyError
+        if self.title in self.title_dict:
+            del self.title_dict[self.title]
         return pdfname, usetime
 
     def __eq__(self, __value: object) -> bool:

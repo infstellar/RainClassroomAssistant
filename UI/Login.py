@@ -164,7 +164,7 @@ class Login_Ui(object):
             }
             wsapp.send(json.dumps(data))
 
-        def on_close(wsapp):
+        def on_close(wsapp, close_status_code, close_msg):
             print("closed")
 
         def on_message(wsapp, message):

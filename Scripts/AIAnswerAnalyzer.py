@@ -81,22 +81,133 @@ class AIAnswerAnalyzer:
         return re.sub(r'[<>:"/\\|?*]', '_', filename)
         
     def load_cached_answers(self, lesson_name: str, presentation_title: str) -> Optional[Dict]:
-        """加载缓存的答案"""
+        """从缓存加载答案"""
         cache_file = self.get_cache_file_path(lesson_name, presentation_title)
         if os.path.exists(cache_file):
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    cache_data = json.load(f)
+                
+                # 兼容旧格式（直接是答案字典）
+                if isinstance(cache_data, dict) and "metadata" not in cache_data:
+                    return cache_data
+                
+                # 新格式：合并AI答案和人工答案
+                ai_answers = cache_data.get("answers", {})
+                manual_answers = cache_data.get("manual_answers", {})
+                
+                # 合并答案，人工答案优先
+                combined_answers = ai_answers.copy()
+                for slide_index, manual_data in manual_answers.items():
+                    if isinstance(manual_data, dict) and "suggested_answers" in manual_data:
+                        # 复杂格式：如果人工答案不是默认模板，则使用人工答案
+                        if manual_data["suggested_answers"] != ["请在此处填写建议答案"]:
+                            combined_answers[slide_index] = manual_data["suggested_answers"]
+                    elif isinstance(manual_data, list) and len(manual_data) > 0:
+                        # 简单格式：如果人工答案非空，则使用人工答案
+                        combined_answers[slide_index] = manual_data
+                
+                return combined_answers
+                
             except Exception as e:
                 self._log(f"加载缓存失败: {e}")
         return None
         
-    def save_cached_answers(self, lesson_name: str, presentation_title: str, answers: Dict):
-        """保存答案到缓存"""
+    def save_cached_answers(self, lesson_name: str, presentation_title: str, answers: Dict, 
+                          slides_info: List[dict] = None, analysis_status: str = "completed"):
+        """
+        保存答案到缓存
+        
+        Args:
+            lesson_name: 课程名称
+            presentation_title: PPT标题
+            answers: AI分析的答案字典
+            slides_info: 幻灯片信息列表，用于生成人工填写模板
+            analysis_status: 分析状态 ("completed", "partial", "failed")
+        """
         cache_file = self.get_cache_file_path(lesson_name, presentation_title)
         try:
+            # 尝试加载现有的缓存文件以保留manual_answers
+            existing_manual_answers = {}
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        existing_data = json.load(f)
+                        existing_manual_answers = existing_data.get("manual_answers", {})
+                        self._log(f"保留现有的 {len(existing_manual_answers)} 个手动答案")
+                except Exception as e:
+                    self._log(f"读取现有缓存文件失败，将创建新文件: {e}")
+            
+            # 构建缓存数据结构
+            cache_data = {
+                "metadata": {
+                    "lesson_name": lesson_name,
+                    "presentation_title": presentation_title,
+                    "analysis_status": analysis_status,
+                    "created_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "ai_model": self.model if hasattr(self, 'model') else "unknown",
+                    "total_slides": len(slides_info) if slides_info else 0,
+                    "ai_analyzed_slides": len(answers),
+                    "manual_template_generated": analysis_status in ["partial", "failed"],
+                    "version": "2.0",
+                    "instructions": {
+                        "manual_fill_guide": "人工填写说明：",
+                        "format": "与AI答案格式相同，使用数组表示答案",
+                        "examples": {
+                            "单选题": "[1] 表示A选项正确，[2] 表示B选项正确",
+                            "多选题": "[1,3] 表示A、C选项正确",
+                            "判断题": "[1] 表示正确，[0] 表示错误",
+                            "填空题": "根据具体题目填写相应内容"
+                        },
+                        "usage": "1. 查看对应幻灯片图片；2. 在manual_answers中找到对应题目；3. 修改数组内容为正确答案；4. 可选择将答案移动到answers部分"
+                    }
+                },
+                "answers": answers,
+                "manual_answers": existing_manual_answers.copy()  # 保留现有的手动答案
+            }
+            
+            # 为失败的幻灯片生成人工填写模板
+            if slides_info and analysis_status in ["partial", "failed"]:
+                failed_count = 0
+                for slide in slides_info:
+                    slide_index = str(slide.get('index', ''))
+                    if slide_index and slide_index not in answers:
+                        # 只有当manual_answers中不存在该题目时才创建模板
+                        if slide_index not in cache_data["manual_answers"]:
+                            failed_count += 1
+                            
+                            # 提取问题信息
+                            problem_info = slide.get('problem', {})
+                            problem_type = problem_info.get('type', '未知')
+                            problem_content = problem_info.get('content', '请查看幻灯片内容')
+                            
+                            # 为失败的幻灯片创建人工填写模板（使用与AI答案相同的格式）
+                            # 根据问题类型提供默认模板
+                            if "选择" in problem_type or "单选" in problem_type:
+                                # 单选题默认模板：空数组，需要人工填写正确选项序号
+                                template_answer = []  # 例如：[1] 表示A选项正确，[1,2] 表示A、B选项正确
+                            elif "判断" in problem_type:
+                                # 判断题默认模板
+                                template_answer = []  # 例如：[1] 表示正确，[0] 表示错误
+                            else:
+                                # 其他题型（填空题等）
+                                template_answer = []  # 需要根据具体题目填写
+                            
+                            cache_data["manual_answers"][slide_index] = template_answer
+                        else:
+                            self._log(f"保留现有手动答案 - 幻灯片 {slide_index}: {cache_data['manual_answers'][slide_index]}")
+                
+                # 更新元数据
+                cache_data["metadata"]["manual_templates_count"] = failed_count
+                cache_data["metadata"]["completion_rate"] = len(answers) / len(slides_info) if slides_info else 0
+            
             with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(answers, f, ensure_ascii=False, indent=2)
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                
+            self._log(f"缓存已保存到: {cache_file}")
+            if analysis_status in ["partial", "failed"]:
+                self._log(f"已生成 {cache_data['metadata'].get('manual_templates_count', 0)} 个人工填写模板")
+            
         except Exception as e:
             self._log(f"保存缓存失败: {e}")
             
@@ -212,6 +323,7 @@ class AIAnswerAnalyzer:
             
             # 如果没有缓存，则进行AI分析
             answers_cache = {}
+            failed_slides = []
             
             # 获取包含问题的幻灯片
             problem_slides = [slide for slide in slides_data if "problem" in slide.keys()]
@@ -229,18 +341,40 @@ class AIAnswerAnalyzer:
                         self._log(f"幻灯片 {slide_index} 分析完成，答案: {ai_answers}")
                     else:
                         self._log(f"幻灯片 {slide_index} 分析失败")
+                        failed_slides.append(slide)
                         
                     # 添加延迟避免API限制
                     time.sleep(self.delay_between_requests)
                 else:
                     self._log(f"幻灯片图片不存在: {image_path}")
+                    failed_slides.append(slide)
                     
-            # 保存缓存
-            if answers_cache:
-                self.save_cached_answers(lesson_name, presentation_title, answers_cache)
-                self._log(f"AI分析完成，共分析 {len(answers_cache)} 个问题，已保存到缓存")
+            # 确定分析状态
+            total_slides = len(problem_slides)
+            successful_slides = len(answers_cache)
+            
+            if successful_slides == 0:
+                analysis_status = "failed"
+                status_msg = "AI分析完全失败"
+            elif successful_slides == total_slides:
+                analysis_status = "completed"
+                status_msg = f"AI分析完成，共分析 {successful_slides} 个问题"
             else:
-                self._log("未找到任何问题或分析失败")
+                analysis_status = "partial"
+                status_msg = f"AI分析部分完成，成功 {successful_slides}/{total_slides} 个问题"
+            
+            # 无论成功与否都保存缓存（包括失败的幻灯片模板）
+            self.save_cached_answers(
+                lesson_name, 
+                presentation_title, 
+                answers_cache, 
+                problem_slides,  # 传入所有问题幻灯片信息
+                analysis_status
+            )
+            
+            self._log(f"{status_msg}，缓存已保存")
+            if failed_slides:
+                self._log(f"失败的幻灯片已生成人工填写模板，请手动编辑缓存文件")
                 
             # 调用回调函数
             if callback:
@@ -250,6 +384,18 @@ class AIAnswerAnalyzer:
                 
         except Exception as e:
             self._log(f"AI分析过程出错: {e}")
+            # 即使出错也尝试保存一个基础的缓存文件
+            try:
+                self.save_cached_answers(
+                    lesson_name, 
+                    presentation_title, 
+                    {}, 
+                    slides_data if 'slides_data' in locals() else [],
+                    "failed"
+                )
+                self._log("已创建失败状态的缓存文件，可用于人工填写答案")
+            except:
+                pass
             return None
         
     def get_cached_answers_for_problems(self, lesson_name: str, presentation_title: str, 
