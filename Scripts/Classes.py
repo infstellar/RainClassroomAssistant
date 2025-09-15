@@ -164,6 +164,8 @@ class Lesson:
 
     def answer_questions(self, problemid, problemtype, answer, limit):
         # 回答问题
+        print(f"problemtype: {problemtype}")
+        print(f"answer: {answer}")
         if answer and problemtype != 3:
             wait_time = calculate_waittime(
                 limit,
@@ -381,11 +383,17 @@ class Lesson:
                     return
                 blanks = promble.get("blanks", [])
                 answers = []
-                if blanks:
-                    for i in blanks:
-                        answers.append(random.choice(i["answers"]))
-                else:
-                    answers = promble.get("answers", [])
+                print(f"blanks: {blanks}")
+                # if blanks:
+                #     for i in blanks:
+                #         if i["answers"]:  # 检查answers列表不为空
+                #             answers.append(random.choice(i["answers"]))
+                #         else:
+                #             # 如果answers为空，记录警告并跳过该空白
+                #             self.add_message(f"{self.lessonname}检测到空白题答案列表为空，跳过该空白", 4)
+                # else:
+                answers = promble.get("answers", [])
+                print(f"answers: {answers}")
                 threading.Thread(
                     target=self.answer_questions,
                     args=(promble["problemId"], promble["problemType"], answers, limit),

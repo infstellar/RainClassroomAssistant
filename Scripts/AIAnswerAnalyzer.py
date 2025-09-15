@@ -200,6 +200,17 @@ class AIAnswerAnalyzer:
         """同步分析整个演示文稿"""
         try:
             self._log(f"开始AI分析: {presentation_title}")
+            
+            # 首先检查是否已有缓存的答案
+            cached_answers = self.load_cached_answers(lesson_name, presentation_title)
+            if cached_answers:
+                self._log(f"发现缓存的AI答案，共 {len(cached_answers)} 个问题")
+                # 调用回调函数
+                if callback:
+                    callback(lesson_name, presentation_title, cached_answers)
+                return cached_answers
+            
+            # 如果没有缓存，则进行AI分析
             answers_cache = {}
             
             # 获取包含问题的幻灯片
@@ -227,7 +238,7 @@ class AIAnswerAnalyzer:
             # 保存缓存
             if answers_cache:
                 self.save_cached_answers(lesson_name, presentation_title, answers_cache)
-                self._log(f"AI分析完成，共分析 {len(answers_cache)} 个问题")
+                self._log(f"AI分析完成，共分析 {len(answers_cache)} 个问题，已保存到缓存")
             else:
                 self._log("未找到任何问题或分析失败")
                 
