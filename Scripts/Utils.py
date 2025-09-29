@@ -12,10 +12,18 @@ from numpy import random
 if sys.platform.startswith("win"):
     import win32api
     import win32con
-    from win10toast import ToastNotifier
+    try:
+        from win10toast import ToastNotifier
+        toaster = ToastNotifier()
+        TOAST_AVAILABLE = True
+    except ImportError:
+        TOAST_AVAILABLE = False
+        toaster = None
+else:
+    TOAST_AVAILABLE = False
+    toaster = None
 
 lock = threading.Lock()
-toaster = ToastNotifier()
 
 
 def is_debug():
@@ -31,11 +39,29 @@ def say_something(text):
 
 
 def show_info(text, title):
-    toaster.show_toast(
-        title, text, icon_path=r"UI\Image\favicon.ico", duration=15, threaded=True
-    )
-    if sys.platform.startswith("win"):
-        win32api.MessageBox(0, text, title, win32con.MB_OK)
+    # 安全的通知显示函数，带异常处理
+    toast_success = False
+    
+    # 尝试显示Toast通知
+    if TOAST_AVAILABLE and toaster:
+        try:
+            toaster.show_toast(
+                title, text, icon_path=r"UI\Image\favicon.ico", duration=15, threaded=True
+            )
+            toast_success = True
+        except Exception as e:
+            # 捕获所有Toast相关异常，包括WNDPROC和WPARAM错误
+            print(f"Toast notification failed: {e}")
+            toast_success = False
+    
+    # 如果Toast失败或不可用，使用MessageBox作为备用方案
+    if not toast_success and sys.platform.startswith("win"):
+        try:
+            win32api.MessageBox(0, text, title, win32con.MB_OK)
+        except Exception as e:
+            print(f"MessageBox failed: {e}")
+            # 最后的备用方案：控制台输出
+            print(f"[{title}] {text}")
 
 
 def dict_result(text):
@@ -98,13 +124,13 @@ def calculate_waittime(limit, type, custom_percent=50):
     elif type == 2:
         wait_time = rand_poisson(lam(limit, 35))
     elif type == 3:
-        wait_time = limit * 0.2 + rand_poisson(lam(limit, 85)) * 0.8
+        wait_time = limit * 0.6 + rand_poisson(lam(limit, 85)) * 0.4
     elif type == 4:
         wait_time = rand_poisson(lam(limit, custom_percent))
     if wait_time > limit:
         if __name__ == "__main__":
             raise Exception("Error: wait_time > limit")
-        wait_time = random.randint(int(limit * 0.25), int(limit * 0.75))
+        wait_time = limit - 25 # random.randint(int(limit * 0.25), int(limit * 0.75))
     return int(wait_time)
 
 

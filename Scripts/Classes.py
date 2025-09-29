@@ -3,13 +3,16 @@ import random
 import threading
 import time
 import traceback
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 import websocket
 
-from Scripts.PPTManager import PPTManager
-from Scripts.AIAnswerAnalyzer import AIAnswerAnalyzer
-from Scripts.Utils import (
+from .PPTManager import PPTManager
+from .AIAnswerAnalyzer import AIAnswerAnalyzer
+from .AsyncDownloader import AsyncPPTDownloadManager
+from .Utils import (
     calculate_waittime,
     dict_result,
     get_user_info,
@@ -48,6 +51,10 @@ class Lesson:
         
         # AI答案分析器延迟初始化
         self._ai_analyzer = None
+        
+        # 异步下载管理器
+        self._async_download_manager = None
+        self._executor = ThreadPoolExecutor(max_workers=4)
 
     @property
     def ai_analyzer(self):
@@ -55,6 +62,24 @@ class Lesson:
         if self._ai_analyzer is None:
             self._ai_analyzer = AIAnswerAnalyzer(self.config, self.add_message)
         return self._ai_analyzer
+    
+    @property
+    def async_download_manager(self):
+        """获取异步下载管理器实例"""
+        if self._async_download_manager is None:
+            self._async_download_manager = AsyncPPTDownloadManager(
+                max_concurrent=8,
+                max_retries=5,
+                progress_callback=self._async_progress_callback
+            )
+        return self._async_download_manager
+    
+    def _async_progress_callback(self, slide, success, error=None):
+        """异步下载进度回调"""
+        if success:
+            self.add_message(f"✓ 下载成功: slide {slide.get('index', '?')}", 0)
+        else:
+            self.add_message(f"✗ 下载失败: slide {slide.get('index', '?')} - {error}", 2)
 
     def _download(self, data):
         data["title"] = data["title"].replace("/", "_").strip()
@@ -113,9 +138,57 @@ class Lesson:
             self.add_message(f"启动AI分析失败: {str(e)}", 0)
 
     def download_ppt(self, presentationid):
-        threading.Thread(
-            target=self._download, args=(self._get_ppt(presentationid),), daemon=True
-        ).start()
+        """使用协程异步下载PPT"""
+        def run_async_download():
+            try:
+                # 在线程池中运行异步任务
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    ppt_data = self._get_ppt(presentationid)
+                    loop.run_until_complete(self._async_download(ppt_data))
+                finally:
+                    loop.close()
+            except Exception as e:
+                self.add_message(f"异步下载失败: {str(e)}", 0)
+        
+        # 在线程池中执行异步下载
+        self._executor.submit(run_async_download)
+    
+    async def _async_download(self, data):
+        """异步下载方法"""
+        try:
+            presentation_title = data.get("title", "未知演示文稿")
+            self.add_message(f"开始异步下载: {presentation_title}", 0)
+            
+            # 使用异步下载管理器，传入课程名称
+            await self.async_download_manager.download_presentation(data, self.lessonname)
+            
+            self.add_message(f"图片下载完成: {presentation_title}", 0)
+            
+            # 异步下载完成后，生成PDF文件
+            try:
+                self.add_message(f"开始生成PDF: {presentation_title}", 0)
+                
+                # 创建PPTManager实例来生成PDF
+                ppt_manager = PPTManager(data, self.lessonname)
+                
+                # 直接调用generate_ppt方法生成PDF（跳过下载步骤，因为图片已经下载完成）
+                pdf_name = ppt_manager.generate_ppt()
+                
+                if pdf_name:
+                    self.add_message(f"PDF生成成功: {pdf_name}", 0)
+                    
+                    # 启动AI分析
+                    self._start_ai_analysis(data, ppt_manager)
+                else:
+                    self.add_message(f"PDF生成失败: {presentation_title}", 0)
+                    
+            except Exception as e:
+                self.add_message(f"PDF生成过程中出错: {str(e)}", 0)
+                
+        except Exception as e:
+            self.add_message(f"异步下载过程中出错: {str(e)}", 0)
 
     def _get_ppt(self, presentationid):
         # 获取课程各页ppt
@@ -154,6 +227,7 @@ class Lesson:
         # 回答问题
         print(f"problemtype: {problemtype}")
         print(f"answer: {answer}")
+        enter_function_time = time.time()
         
         # 如果answer为空或转bool为false，尝试使用AI缓存答案覆盖
         if not answer and self.config.get('enable_ai_analysis', False):
@@ -212,7 +286,10 @@ class Lesson:
                 )
                 # threading.Thread(target=say_something,args=(meg,)).start()
                 self.add_message(meg, 3)
-                time.sleep(wait_time)
+                while 1:
+                    time.sleep(1)
+                    if time.time() - enter_function_time >= wait_time:
+                        break
             else:
                 meg = "%s检测到问题，剩余时间小于15秒，将立即自动回答，答案为%s" % (
                     self.lessonname,
@@ -368,43 +445,68 @@ class Lesson:
                             i.name,
                             data["danmu"],
                         )
-                        self.add_message(meg, 2)
+                        self.add_message(meg, 0)
                         break
             else:
                 self.classmates_ls.append(sent_danmu_user)
-                sent_danmu_user.get_userinfo(self.classroomid, self.headers)
+                sent_danmu_user.get_userinfo(self.classroomid, self.headers, self.region)
                 meg = "%s课程的%s%s发送了弹幕：%s" % (
                     self.lessonname,
                     sent_danmu_user.sno,
                     sent_danmu_user.name,
                     data["danmu"],
                 )
-                self.add_message(meg, 2)
+                self.add_message(meg, 0)
             now = time.time()
             # 收到一条弹幕，尝试取出其之前的所有记录的列表，取不到则初始化该内容列表
+            self.add_message(f"[DEBUG] 处理弹幕内容: '{current_content}', 当前时间: {now}", 0)
             try:
                 same_content_ls = self.danmu_dict[current_content]
+                self.add_message(f"[DEBUG] 找到已有弹幕记录，历史记录数: {len(same_content_ls)}", 0)
             except KeyError:
                 self.danmu_dict[current_content] = []
                 same_content_ls = self.danmu_dict[current_content]
+                self.add_message(f"[DEBUG] 初始化新弹幕记录: '{current_content}'", 0)
+            
             # 清除超过60秒的弹幕记录
-            for i in same_content_ls:
-                if now - i > 60:
-                    same_content_ls.remove(i)
+            old_count = len(same_content_ls)
+            same_content_ls[:] = [i for i in same_content_ls if now - i <= 60]
+            if old_count != len(same_content_ls):
+                self.add_message(f"[DEBUG] 清除过期记录: {old_count} -> {len(same_content_ls)}", 0)
+            
+            # 检查弹幕发送条件
+            danmu_limit = self.config["danmu_config"]["danmu_limit"]
+            self.add_message(f"[DEBUG] 弹幕限制阈值: {danmu_limit}, 当前记录数: {len(same_content_ls)}", 0)
+            
             # 如果当前的弹幕没被发过，或者已发送时间超过60秒
+            last_sent_time = self.sent_danmu_dict.get(current_content, 0)
+            time_since_last_sent = now - last_sent_time if last_sent_time > 0 else float('inf')
+            self.add_message(f"[DEBUG] 上次发送时间: {last_sent_time}, 距离现在: {time_since_last_sent:.2f}秒", 0)
+            
             if (
                 current_content not in self.sent_danmu_dict.keys()
                 or now - self.sent_danmu_dict[current_content] > 60
             ):
+                self.add_message(f"[DEBUG] 弹幕可以发送 (未发送过或超过60秒)", 0)
                 if (
                     len(same_content_ls) + 1
                     >= self.config["danmu_config"]["danmu_limit"]
                 ):
-                    self.send_danmu(current_content)
-                    same_content_ls = []
-                    self.sent_danmu_dict[current_content] = now
+                    self.add_message(f"[DEBUG] 达到发送阈值 ({len(same_content_ls) + 1} >= {danmu_limit}), 准备发送弹幕", 0)
+                    try:
+                        self.send_danmu(current_content)
+                        self.add_message(f"[DEBUG] 弹幕发送完成，清空记录并更新发送时间", 0)
+                        same_content_ls = []
+                        self.sent_danmu_dict[current_content] = now
+                    except Exception as e:
+                        self.add_message(f"[ERROR] 弹幕发送异常: {str(e)}", 0)
+                        import traceback
+                        self.add_message(f"[ERROR] 异常详情: {traceback.format_exc()}", 0)
                 else:
+                    self.add_message(f"[DEBUG] 未达到发送阈值，添加记录 ({len(same_content_ls) + 1} < {danmu_limit})", 0)
                     same_content_ls.append(now)
+            else:
+                self.add_message(f"[DEBUG] 弹幕发送被跳过 (60秒内已发送过)", 0)
         elif op == "callpaused":
             meg = "%s点名了，点到了：%s" % (self.lessonname, data["name"])
             if self.user_uname == data["name"]:
@@ -515,6 +617,7 @@ class Lesson:
         return callback(self)
 
     def send_danmu(self, content):
+        self.add_message(f"[DEBUG] 开始发送弹幕: '{content}'", 0)
         url = f"https://{get_host(self.config['region'])}/api/v3/lesson/danmu/send"
         data = {
             "extra": "",
@@ -527,17 +630,36 @@ class Lesson:
             "userName": "",
             "wordCloud": True,
         }
-        r = requests.post(
-            url=url,
-            headers=self.headers,
-            data=json.dumps(data),
-            proxies={"http": None, "https": None},
-        )
-        if dict_result(r.text)["code"] == 0:
-            meg = "%s弹幕发送成功！内容：%s" % (self.lessonname, content)
-        else:
-            meg = "%s弹幕发送失败！内容：%s" % (self.lessonname, content)
-        self.add_message(meg, 1)
+        self.add_message(f"[DEBUG] 请求URL: {url}", 0)
+        self.add_message(f"[DEBUG] 请求数据: {json.dumps(data, ensure_ascii=False)}", 0)
+        
+        try:
+            r = requests.post(
+                url=url,
+                headers=self.headers,
+                data=json.dumps(data),
+                proxies={"http": None, "https": None},
+            )
+            self.add_message(f"[DEBUG] HTTP响应状态码: {r.status_code}", 0)
+            self.add_message(f"[DEBUG] HTTP响应内容: {r.text}", 0)
+            
+            result = dict_result(r.text)
+            self.add_message(f"[DEBUG] 解析后的响应: {result}", 0)
+            
+            if result["code"] == 0:
+                meg = "%s弹幕发送成功！内容：%s" % (self.lessonname, content)
+                self.add_message(f"[DEBUG] 弹幕发送成功", 0)
+            else:
+                meg = "%s弹幕发送失败！内容：%s" % (self.lessonname, content)
+                self.add_message(f"[DEBUG] 弹幕发送失败，错误代码: {result.get('code', 'unknown')}", 0)
+            self.add_message(meg, 1)
+        except Exception as e:
+            self.add_message(f"[ERROR] 弹幕发送请求异常: {str(e)}", 0)
+            import traceback
+            self.add_message(f"[ERROR] 异常详情: {traceback.format_exc()}", 0)
+            meg = "%s弹幕发送异常！内容：%s，错误：%s" % (self.lessonname, content, str(e))
+            self.add_message(meg, 1)
+            raise
 
     def get_lesson_info(self):
         url = f"https://{get_host(self.config['region'])}/api/v3/lesson/basic-info"
@@ -554,9 +676,9 @@ class User:
     def __init__(self, uid):
         self.uid = uid
 
-    def get_userinfo(self, classroomid, headers):
+    def get_userinfo(self, classroomid, headers, region):
         r = requests.get(
-            f"https://{get_host(self.config['region'])}/v/course_meta/fetch_user_info_new?query_user_id={self.uid}&classroom_id={classroomid}",
+            f"https://{get_host(region)}/v/course_meta/fetch_user_info_new?query_user_id={self.uid}&classroom_id={classroomid}",
             headers=headers,
             proxies={"http": None, "https": None},
         )
