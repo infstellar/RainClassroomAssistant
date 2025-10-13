@@ -44,6 +44,20 @@ class Lesson:
         self.config = main_ui.config
         self.region = self.config["region"]
         code, rtn = get_user_info(self.sessionid, self.config["region"])
+        
+        # 检查返回的数据类型和API响应状态
+        if code != 0 or not isinstance(rtn, dict):
+            # 如果API返回错误或rtn不是字典，抛出更明确的错误信息
+            error_msg = f"获取用户信息失败: code={code}, rtn={rtn}"
+            self.add_message(error_msg, 0)
+            raise ValueError(error_msg)
+        
+        # 检查必要的字段是否存在
+        if "id" not in rtn or "name" not in rtn:
+            error_msg = f"用户信息格式错误，缺少必要字段: {rtn}"
+            self.add_message(error_msg, 0)
+            raise ValueError(error_msg)
+            
         self.user_uid = rtn["id"]
         self.user_uname = rtn["name"]
         self.main_ui = main_ui
