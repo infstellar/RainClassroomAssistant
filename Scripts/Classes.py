@@ -101,6 +101,12 @@ class Lesson:
         self.add_message("开始下载ppt : " + data["title"] + ".pdf", 0)
         try:
             ppt_manager = PPTManager(data, self.lessonname)
+            
+            # 设置数据刷新回调，用于重试时获取最新数据
+            presentation_id = getattr(self, '_current_presentation_id', None)
+            if presentation_id:
+                ppt_manager.set_data_refresh_callback(presentation_id, self._get_ppt)
+            
             pdfname, usetime = ppt_manager.start()
             if pdfname is None or usetime is None:
                 if is_debug():
@@ -153,6 +159,9 @@ class Lesson:
 
     def download_ppt(self, presentationid):
         """使用协程异步下载PPT"""
+        # 存储当前presentation_id，用于数据刷新
+        self._current_presentation_id = presentationid
+        
         def run_async_download():
             try:
                 # 在线程池中运行异步任务
@@ -394,9 +403,12 @@ class Lesson:
                 )
             )
             print(data)
-            current_presentation = data["presentation"]
-            if current_presentation not in presentations:
+            # 安全地获取current_presentation，如果不存在则使用None
+            current_presentation = data.get("presentation")
+            if current_presentation is not None and current_presentation not in presentations:
                 presentations.append(current_presentation)
+            elif current_presentation is None:
+                self.add_message("警告：WebSocket消息中缺少'presentation'字段", 1)
             
             # 初始化已下载的presentation集合（如果不存在）
             if not hasattr(self, 'downloaded_presentations'):
@@ -412,7 +424,11 @@ class Lesson:
                 if presentationid not in self.downloaded_presentations:
                     self.download_ppt(presentationid)
                     self.downloaded_presentations.add(presentationid)
-            self.unlocked_problem = data["unlockedproblem"]
+            
+            # 安全地获取unlockedproblem字段
+            self.unlocked_problem = data.get("unlockedproblem", [])
+            if not self.unlocked_problem:
+                self.add_message("警告：WebSocket消息中缺少'unlockedproblem'字段", 1)
             for problemid in self.unlocked_problem:
                 self._current_problem(wsapp, problemid)
         elif op == "unlockproblem":
@@ -423,29 +439,39 @@ class Lesson:
             self.add_message(meg, 7)
             wsapp.close()
         elif op == "presentationupdated":
-            self.problems_ls.extend(self.get_problems(data["presentation"]))
-            for problem in self.problems_ls:
-                self.problems_dict[problem["index"]] = problem["answers"]
-            
-            # 检查是否已经下载过此presentation
-            if not hasattr(self, 'downloaded_presentations'):
-                self.downloaded_presentations = set()
-            
-            if data["presentation"] not in self.downloaded_presentations:
-                self.download_ppt(data["presentation"])
-                self.downloaded_presentations.add(data["presentation"])
+            # 安全地获取presentation字段
+            presentation_id = data.get("presentation")
+            if presentation_id is not None:
+                self.problems_ls.extend(self.get_problems(presentation_id))
+                for problem in self.problems_ls:
+                    self.problems_dict[problem["index"]] = problem["answers"]
+                
+                # 检查是否已经下载过此presentation
+                if not hasattr(self, 'downloaded_presentations'):
+                    self.downloaded_presentations = set()
+                
+                if presentation_id not in self.downloaded_presentations:
+                    self.download_ppt(presentation_id)
+                    self.downloaded_presentations.add(presentation_id)
+            else:
+                self.add_message("警告：presentationupdated消息中缺少'presentation'字段", 1)
         elif op == "presentationcreated":
-            self.problems_ls.extend(self.get_problems(data["presentation"]))
-            for problem in self.problems_ls:
-                self.problems_dict[problem["index"]] = problem["answers"]
-            
-            # 检查是否已经下载过此presentation
-            if not hasattr(self, 'downloaded_presentations'):
-                self.downloaded_presentations = set()
-            
-            if data["presentation"] not in self.downloaded_presentations:
-                self.download_ppt(data["presentation"])
-                self.downloaded_presentations.add(data["presentation"])
+            # 安全地获取presentation字段
+            presentation_id = data.get("presentation")
+            if presentation_id is not None:
+                self.problems_ls.extend(self.get_problems(presentation_id))
+                for problem in self.problems_ls:
+                    self.problems_dict[problem["index"]] = problem["answers"]
+                
+                # 检查是否已经下载过此presentation
+                if not hasattr(self, 'downloaded_presentations'):
+                    self.downloaded_presentations = set()
+                
+                if presentation_id not in self.downloaded_presentations:
+                    self.download_ppt(presentation_id)
+                    self.downloaded_presentations.add(presentation_id)
+            else:
+                self.add_message("警告：presentationcreated消息中缺少'presentation'字段", 1)
         elif op == "newdanmu" and self.config["auto_danmu"]:
             current_content = data["danmu"].lower()
             uid = data["userid"]

@@ -36,8 +36,21 @@ class AsyncImageDownloader:
         self.max_retries = max_retries
         self.progress_callback = progress_callback
         self.skip_existing = skip_existing
-        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self._semaphore = None  # 延迟初始化，避免事件循环绑定问题
         
+    @property
+    def semaphore(self):
+        """获取或创建Semaphore实例，确保在正确的事件循环中创建"""
+        if self._semaphore is None:
+            try:
+                # 尝试获取当前事件循环
+                loop = asyncio.get_running_loop()
+                self._semaphore = asyncio.Semaphore(self.max_concurrent)
+            except RuntimeError:
+                # 如果没有运行中的事件循环，创建一个新的
+                self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        return self._semaphore
+
     async def download_image(self, 
                            session: aiohttp.ClientSession,
                            slide: Dict[str, Any],
@@ -73,6 +86,8 @@ class AsyncImageDownloader:
                     # 下载图片
                     async with session.get(url, timeout=self.timeout) as response:
                         if response.status != 200:
+                            from loguru import logger
+                            logger.error(f"HTTP {response.status} 错误: {url}")
                             raise aiohttp.ClientError(f"HTTP {response.status}")
                             
                         # 检查内容类型
@@ -103,6 +118,7 @@ class AsyncImageDownloader:
                     
                 except Exception as e:
                     if attempt == self.max_retries - 1:
+                        logger.error(f"下载失败: {url} ({str(e)})")
                         # 最后一次尝试失败，清理文件
                         for cleanup_file in [temp_image_name, final_image_name]:
                             if os.path.exists(cleanup_file):
@@ -245,13 +261,17 @@ class AsyncImageDownloader:
         # 统计结果
         successful = []
         failed = []
-        
+        from loguru import logger
         for result in results:
             if isinstance(result, Exception):
+                
+                logger.error(f"下载图片失败: {str(result)}")
                 failed.append({"error": str(result)})
             elif result.get("success"):
+                # logger.info(f"下载图片成功: {result}")
                 successful.append(result)
             else:
+                logger.warning(f"下载图片未知状态: {result}")
                 failed.append(result)
         
         end_time = time.time()
@@ -276,21 +296,61 @@ class AsyncPPTDownloadManager:
                  progress_callback: Optional[Callable] = None,
                  skip_existing: bool = True):
         """
-        初始化管理器
+        初始化异步PPT下载管理器
         
         Args:
             max_concurrent: 最大并发数
             max_retries: 最大重试次数
             progress_callback: 进度回调函数
-            skip_existing: 是否跳过已存在的有效文件
+            skip_existing: 是否跳过已存在的文件
         """
+        self.max_retries = max_retries
         self.downloader = AsyncImageDownloader(
             max_concurrent=max_concurrent,
+            max_retries=1,  # 单次下载不重试，由外层统一管理重试
             progress_callback=progress_callback,
             skip_existing=skip_existing
         )
-        self.max_retries = max_retries
+        # 添加数据刷新回调支持
+        self.data_refresh_callback = None
+        self.presentation_id = None
         self.skip_existing = skip_existing
+    
+    def set_data_refresh_callback(self, presentation_id: str, callback: Callable):
+        """
+        设置数据刷新回调函数
+        
+        Args:
+            presentation_id: 演示文稿ID
+            callback: 数据刷新回调函数
+        """
+        self.presentation_id = presentation_id
+        self.data_refresh_callback = callback
+    
+    async def refresh_slides_data(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        刷新幻灯片数据
+        
+        Returns:
+            刷新后的幻灯片数据，如果刷新失败返回None
+        """
+        if not self.data_refresh_callback or not self.presentation_id:
+            print("数据刷新回调未设置，跳过数据刷新")
+            return None
+        
+        try:
+            print(f"正在刷新演示文稿 {self.presentation_id} 的数据...")
+            refreshed_data = self.data_refresh_callback(self.presentation_id)
+            if refreshed_data and "slides" in refreshed_data:
+                slides = refreshed_data["slides"]
+                print(f"数据刷新成功，获取到 {len(slides)} 张幻灯片")
+                return slides
+            else:
+                print("数据刷新失败：未获取到有效的幻灯片数据")
+                return None
+        except Exception as e:
+            print(f"数据刷新异常：{str(e)}")
+            return None
     
     async def download_presentation(self, data: Dict[str, Any], lessonname: str = "未知课程") -> Dict[str, Any]:
         """
@@ -341,7 +401,7 @@ class AsyncPPTDownloadManager:
                                 slides: List[Dict[str, Any]], 
                                 img_path: str) -> Dict[str, Any]:
         """
-        带重试机制的下载
+        带重试机制的下载，支持数据刷新重试
         
         Args:
             slides: 幻灯片列表
@@ -366,9 +426,46 @@ class AsyncPPTDownloadManager:
             
             # 准备重试失败的项目
             if result["failed_list"] and attempt < self.max_retries - 1:
-                remaining_slides = [item["slide"] for item in result["failed_list"] 
-                                  if "slide" in item]
-                await asyncio.sleep(1)  # 重试前等待
+                failed_slides = [item["slide"] for item in result["failed_list"] 
+                               if "slide" in item]
+                
+                # 检查是否有空URL的幻灯片
+                empty_url_slides = [slide for slide in failed_slides 
+                                  if not slide.get("cover") or slide.get("cover").strip() == ""]
+                
+                if empty_url_slides:
+                    print(f"发现 {len(empty_url_slides)} 张幻灯片URL为空，尝试刷新数据...")
+                    
+                    # 尝试刷新数据
+                    refreshed_slides = await self.refresh_slides_data()
+                    if refreshed_slides:
+                        # 更新失败幻灯片的URL
+                        slide_map = {slide.get("id", slide.get("slideId", "")): slide 
+                                   for slide in refreshed_slides}
+                        
+                        updated_slides = []
+                        for slide in failed_slides:
+                            slide_id = slide.get("id", slide.get("slideId", ""))
+                            if slide_id in slide_map:
+                                updated_slide = slide_map[slide_id]
+                                if updated_slide.get("cover") and updated_slide.get("cover").strip():
+                                    print(f"幻灯片 {slide_id} URL已更新")
+                                    updated_slides.append(updated_slide)
+                                else:
+                                    print(f"幻灯片 {slide_id} URL仍为空，跳过下载")
+                            else:
+                                updated_slides.append(slide)  # 保持原有幻灯片
+                        
+                        remaining_slides = updated_slides
+                    else:
+                        remaining_slides = failed_slides
+                else:
+                    remaining_slides = failed_slides
+                
+                # 等待时间递增
+                wait_time = min(2 ** attempt, 10)  # 指数退避，最大10秒
+                print(f"等待 {wait_time} 秒后重试...")
+                await asyncio.sleep(wait_time)
             else:
                 remaining_slides = []
         

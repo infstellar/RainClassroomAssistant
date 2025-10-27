@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import PyPDF2
 import requests
+import aiohttp
 from fpdf import FPDF
 from PIL import Image, ImageDraw, ImageFont
 
@@ -46,8 +47,21 @@ class PPTManager:
         self.max_retry_attempts = 5
         self.failed_downloads = []
         
-        # 异步下载器
+        # 存储原始数据获取信息，用于数据刷新
+        self.presentation_id = None
+        self.data_refresh_callback = None
+        
+        # 初始化异步下载器
         self.async_downloader = AsyncImageDownloader()
+        
+        # 初始化异步PPT下载管理器
+        from .AsyncDownloader import AsyncPPTDownloadManager
+        self.async_ppt_manager = AsyncPPTDownloadManager(
+            max_concurrent=8,
+            max_retries=self.max_retry_attempts,
+            skip_existing=True
+        )
+        
         self._executor = ThreadPoolExecutor(max_workers=8)
         
         self.check_dir()
@@ -95,26 +109,26 @@ class PPTManager:
         self.retry_failed_downloads()
     
     async def _async_download_all(self):
-        """异步下载所有幻灯片"""
-        tasks = []
-        for slide in self.slides:
-            task = self.async_downloader.download_image(
-                url=slide["cover"],
-                save_path=os.path.join(self.imgpath, f"{slide['index']}.jpg"),
-                target_format="JPEG"
+        """使用增强的异步下载管理器下载所有幻灯片"""
+        try:
+            # 使用增强的异步PPT下载管理器
+            result = await self.async_ppt_manager.download_with_retry(
+                self.slides, 
+                self.imgpath
             )
-            tasks.append(task)
-        
-        # 并发执行所有下载任务
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 处理下载结果
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                print(f"下载幻灯片 {self.slides[i]['index']} 失败: {str(result)}")
-                self.failed_downloads.append(self.slides[i])
-            else:
-                print(f"下载幻灯片 {self.slides[i]['index']} 成功")
+            
+            print(f"下载完成: 总计 {result['total']} 张，成功 {result['successful']} 张，失败 {result['failed']} 张")
+            
+            return result
+            
+        except Exception as e:
+            print(f"异步下载异常: {str(e)}")
+            return {
+                "total": len(self.slides),
+                "successful": 0,
+                "failed": len(self.slides),
+                "success_list": []
+            }
 
     def get_problems(self):
         slides = [problem for problem in self.slides if "problem" in problem.keys()]
@@ -160,6 +174,41 @@ class PPTManager:
                 missing_images.append(slide)
         return missing_images
 
+    def set_data_refresh_callback(self, presentation_id, callback):
+        """
+        设置数据刷新回调函数
+        
+        Args:
+            presentation_id: 演示文稿ID
+            callback: 数据刷新回调函数
+        """
+        self.presentation_id = presentation_id
+        self.data_refresh_callback = callback
+        
+        # 同时设置异步PPT管理器的回调
+        self.async_ppt_manager.set_data_refresh_callback(presentation_id, callback)
+    
+    def refresh_slides_data(self):
+        """刷新幻灯片数据"""
+        if self.data_refresh_callback and self.presentation_id:
+            try:
+                print("正在刷新PPT数据...")
+                new_data = self.data_refresh_callback(self.presentation_id)
+                if new_data and "slides" in new_data:
+                    old_count = len(self.slides)
+                    self.slides = new_data["slides"]
+                    print(f"数据刷新完成，幻灯片数量: {old_count} -> {len(self.slides)}")
+                    return True
+                else:
+                    print("数据刷新失败：获取到的数据无效")
+                    return False
+            except Exception as e:
+                print(f"数据刷新失败: {str(e)}")
+                return False
+        else:
+            print("无法刷新数据：缺少回调函数或presentation_id")
+            return False
+
     def retry_failed_downloads(self):
         """重试下载失败或缺失的图片，最多尝试5次"""
         def run_async_retry():
@@ -178,7 +227,7 @@ class PPTManager:
         future.result()  # 等待完成
     
     async def _async_retry_downloads(self):
-        """异步重试下载失败的图片"""
+        """异步重试下载失败的图片，包含数据刷新机制"""
         for attempt in range(self.max_retry_attempts):
             missing_images = self.get_missing_images()
             
@@ -188,26 +237,51 @@ class PPTManager:
                 
             print(f"第 {attempt + 1} 次重试，需要重新下载 {len(missing_images)} 张图片")
             
-            # 异步重新下载缺失的图片
-            tasks = []
-            for slide in missing_images:
-                task = self.async_downloader.download_image(
-                    url=slide["cover"],
-                    save_path=os.path.join(self.imgpath, f"{slide['index']}.jpg"),
-                    target_format="JPEG"
-                )
-                tasks.append(task)
-            
-            # 并发执行重试任务
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # 处理重试结果
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    print(f"重试下载幻灯片 {missing_images[i]['index']} 失败: {str(result)}")
+            # 检查是否有空URL的幻灯片，如果有则尝试刷新数据
+            empty_url_slides = [slide for slide in missing_images if not slide.get('cover')]
+            if empty_url_slides and attempt < self.max_retry_attempts - 1:
+                print(f"发现 {len(empty_url_slides)} 个空URL幻灯片，尝试刷新数据...")
+                # 等待一段时间后刷新数据
+                await asyncio.sleep(3 + attempt * 2)  # 递增等待时间
+                
+                if self.refresh_slides_data():
+                    print("数据刷新成功，重新检查缺失图片...")
+                    continue  # 重新开始这次重试
                 else:
-                    print(f"重试下载幻灯片 {missing_images[i]['index']} 成功")
+                    print("数据刷新失败，继续使用原有数据重试...")
+            
+            # 创建aiohttp会话并异步重新下载缺失的图片
+            async with aiohttp.ClientSession() as session:
+                tasks = []
+                for slide in missing_images:
+                    # 跳过没有URL的幻灯片
+                    if not slide.get('cover'):
+                        print(f"跳过空URL幻灯片 {slide['index']}")
+                        continue
+                        
+                    task = self.async_downloader.download_image(
+                        session=session,
+                        slide=slide,
+                        img_path=self.imgpath
+                    )
+                    tasks.append((task, slide))
+                
+                if tasks:
+                    # 并发执行重试任务
+                    results = await asyncio.gather(*[task for task, _ in tasks], return_exceptions=True)
                     
+                    # 处理重试结果
+                    for i, result in enumerate(results):
+                        slide = tasks[i][1]
+                        if isinstance(result, Exception):
+                            print(f"重试下载幻灯片 {slide['index']} 失败: {str(result)}")
+                        elif result.get("success", False):
+                            print(f"重试下载幻灯片 {slide['index']} 成功")
+                        else:
+                            print(f"重试下载幻灯片 {slide['index']} 失败: {result.get('error', '未知错误')}")
+                else:
+                    print("本次重试没有可下载的图片（全部为空URL）")
+                        
             # 短暂等待，让文件系统同步
             await asyncio.sleep(1)
         
@@ -215,8 +289,12 @@ class PPTManager:
         final_missing = self.get_missing_images()
         if final_missing:
             print(f"警告：经过 {self.max_retry_attempts} 次重试后，仍有 {len(final_missing)} 张图片下载失败")
+            empty_url_count = len([slide for slide in final_missing if not slide.get('cover')])
+            if empty_url_count > 0:
+                print(f"其中 {empty_url_count} 张图片因URL为空无法下载")
             for slide in final_missing:
-                print(f"  - 图片 {slide['index']}: {slide.get('cover', 'URL未知')}")
+                url_status = "URL为空" if not slide.get('cover') else slide.get('cover', 'URL未知')
+                print(f"  - 图片 {slide['index']}: {url_status}")
         else:
             print("所有图片下载并验证完成")
     def add_hash(self, path):
