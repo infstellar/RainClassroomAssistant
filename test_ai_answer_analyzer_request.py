@@ -1,4 +1,5 @@
 import requests
+import json
 
 from Scripts.AIAnswerAnalyzer import AIAnswerAnalyzer
 
@@ -192,3 +193,90 @@ def test_analyze_slide_treats_usage_only_sse_as_empty_content(monkeypatch, tmp_p
     answers = analyzer.analyze_slide_with_openai(str(image_path), 12)
 
     assert answers == []
+
+
+def test_analyze_presentation_ignores_title_cache_missing_current_problem_slide(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "ai_cache"
+    image_path = tmp_path / "9.jpg"
+    image_path.write_bytes(b"image")
+
+    analyzer = AIAnswerAnalyzer({"enable_ai_analysis": False})
+    analyzer.cache_dir = str(cache_dir)
+    analyzer.ensure_cache_dir()
+    cache_file = analyzer.get_cache_file_path("lesson", "title")
+    with open(cache_file, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "metadata": {
+                    "lesson_name": "lesson",
+                    "presentation_title": "title",
+                    "analysis_status": "completed",
+                    "total_slides": 1,
+                    "ai_analyzed_slides": 1,
+                },
+                "answers": {"10": ["old"]},
+                "manual_answers": {},
+            },
+            f,
+        )
+
+    monkeypatch.setattr(analyzer, "analyze_slide_with_openai", lambda image_path, slide_index: ["new"])
+    monkeypatch.setattr("Scripts.AIAnswerAnalyzer.time.sleep", lambda *_: None)
+
+    answers = analyzer.analyze_presentation(
+        "lesson",
+        "title",
+        [
+            {
+                "index": 9,
+                "id": "slide-9",
+                "problem": {"problemId": "problem-9"},
+            }
+        ],
+        str(tmp_path),
+    )
+
+    assert answers == {"9": ["new"]}
+
+
+def test_analyze_presentation_reuses_cache_when_problem_signature_matches(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "ai_cache"
+    image_path = tmp_path / "9.jpg"
+    image_path.write_bytes(b"image")
+
+    analyzer = AIAnswerAnalyzer({"enable_ai_analysis": False})
+    analyzer.cache_dir = str(cache_dir)
+    analyzer.ensure_cache_dir()
+    analyzer.save_cached_answers(
+        "lesson",
+        "title",
+        {"9": ["cached"]},
+        [
+            {
+                "index": 9,
+                "id": "slide-9",
+                "problem": {"problemId": "problem-9"},
+            }
+        ],
+        "completed",
+    )
+
+    def fail_if_called(*args):
+        raise AssertionError("cache should have been reused")
+
+    monkeypatch.setattr(analyzer, "analyze_slide_with_openai", fail_if_called)
+
+    answers = analyzer.analyze_presentation(
+        "lesson",
+        "title",
+        [
+            {
+                "index": 9,
+                "id": "slide-9",
+                "problem": {"problemId": "problem-9"},
+            }
+        ],
+        str(tmp_path),
+    )
+
+    assert answers == {"9": ["cached"]}

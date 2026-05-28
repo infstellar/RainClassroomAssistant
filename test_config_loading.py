@@ -29,6 +29,7 @@ class _ToastNotifier:
 win10toast_stub.ToastNotifier = _ToastNotifier
 sys.modules.setdefault("win10toast", win10toast_stub)
 
+from Scripts import Utils
 from Scripts.Utils import apply_ai_config_overrides, get_initial_data
 
 
@@ -90,6 +91,30 @@ def test_get_initial_data_keeps_nested_defaults():
     assert merged["ai_analysis_settings"]["request_timeout"] in (60, 120)
     assert "max_retries" in merged["ai_analysis_settings"]
     assert "delay_between_requests" in merged["ai_analysis_settings"]
+
+
+def test_config_path_defaults_to_project_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(Utils, "get_project_root", lambda: str(tmp_path))
+
+    assert Utils.get_config_dir() == str(tmp_path)
+    assert Utils.get_config_path() == str(tmp_path / "config.json")
+
+
+def test_get_config_path_migrates_existing_appdata_config(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    appdata_root = tmp_path / "appdata"
+    old_config_dir = appdata_root / "RainClassroomAssistant"
+    old_config_dir.mkdir(parents=True)
+    old_config_path = old_config_dir / "config.json"
+    old_config_path.write_text('{"sessionid":"old-session"}', encoding="utf-8")
+
+    monkeypatch.setattr(Utils, "get_project_root", lambda: str(project_root))
+    monkeypatch.setenv("APPDATA", str(appdata_root))
+
+    config_path = Utils.get_config_path()
+
+    assert config_path == str(project_root / "config.json")
+    assert (project_root / "config.json").read_text(encoding="utf-8") == '{"sessionid":"old-session"}'
 
 
 if __name__ == "__main__":

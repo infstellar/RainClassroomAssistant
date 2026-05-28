@@ -22,14 +22,7 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    # 临时修改导入路径以避免循环导入
-    import importlib.util
-    
-    # 直接导入PPTManager
-    spec = importlib.util.spec_from_file_location("PPTManager", "PPTManager.py")
-    PPTManager_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(PPTManager_module)
-    PPTManager = PPTManager_module.PPTManager
+    from Scripts.PPTManager import PPTManager
     print("✓ PPTManager 导入成功")
 except ImportError as e:
     print(f"✗ PPTManager 导入失败: {e}")

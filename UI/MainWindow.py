@@ -10,7 +10,6 @@
 
 import datetime
 import json
-import logging
 import os
 import re
 import threading
@@ -19,6 +18,7 @@ import traceback
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Scripts.Monitor import monitor
+from Scripts.Logger import logger
 from Scripts.Update import Update, get_version
 from Scripts.Utils import *
 from UI.Config import Config_Ui
@@ -393,7 +393,9 @@ class MainWindow_Ui(QtCore.QObject):
         # 新增输出信息，并尝试语音播报
         time = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
         self.output_textarea.append(time + message)
-        logging.info(message)
+        logger.info(message)
+        if type == 4:
+            send_email_notification_if_needed(message, type, self.config)
         if not type == 0:
             self.audio(message, type)
 

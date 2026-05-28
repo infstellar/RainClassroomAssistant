@@ -1,8 +1,11 @@
 import json
 import os
+import shutil
+import smtplib
 import sys
 import threading
 from copy import deepcopy
+from email.message import EmailMessage
 from math import exp
 
 import pyttsx3
@@ -75,6 +78,74 @@ def show_info(text, title):
             print(f"MessageBox failed: {e}")
             # 最后的备用方案：控制台输出
             print(f"[{title}] {text}")
+
+
+def get_email_config(config):
+    return config.get("email_config", {}) if isinstance(config, dict) else {}
+
+
+def is_email_notification_configured(config):
+    email_config = get_email_config(config)
+    required_keys = ("smtp_server", "username", "password", "recipient")
+    return bool(
+        email_config.get("enabled")
+        and all(email_config.get(key) for key in required_keys)
+    )
+
+
+def send_email_notification(message, config):
+    email_config = get_email_config(config)
+    if not is_email_notification_configured(config):
+        return False
+
+    sender = email_config.get("sender") or email_config["username"]
+    subject = email_config.get("subject") or "雨课堂助手通知"
+    smtp_port = int(email_config.get("smtp_port") or 465)
+    timeout = int(email_config.get("timeout") or 10)
+
+    email_message = EmailMessage()
+    email_message["Subject"] = subject
+    email_message["From"] = sender
+    email_message["To"] = email_config["recipient"]
+    email_message.set_content(message)
+
+    try:
+        if email_config.get("use_ssl", True):
+            smtp_client = smtplib.SMTP_SSL(
+                email_config["smtp_server"],
+                smtp_port,
+                timeout=timeout,
+            )
+        else:
+            smtp_client = smtplib.SMTP(
+                email_config["smtp_server"],
+                smtp_port,
+                timeout=timeout,
+            )
+        with smtp_client as smtp:
+            if not email_config.get("use_ssl", True) and email_config.get(
+                "starttls",
+                True,
+            ):
+                smtp.starttls()
+            smtp.login(email_config["username"], email_config["password"])
+            smtp.send_message(email_message)
+        return True
+    except Exception as e:
+        print(f"Email notification failed: {e}")
+        return False
+
+
+def send_email_notification_if_needed(message, type, config):
+    if type != 4 or not is_email_notification_configured(config):
+        return False
+
+    threading.Thread(
+        target=send_email_notification,
+        args=(message, config),
+        daemon=True,
+    ).start()
+    return True
 
 
 def dict_result(text):
@@ -187,8 +258,8 @@ def merge_known_config(base_config, override_config):
 def get_ai_config_paths():
     """返回ai_config.json的候选路径，按优先级排序。"""
     return [
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ai_config.json")),
-        os.path.join(get_config_dir(), "ai_config.json"),
+        os.path.join(get_project_root(), "ai_config.json"),
+        os.path.join(get_appdata_config_dir(), "ai_config.json"),
         os.path.abspath("ai_config.json"),
     ]
 
@@ -238,6 +309,19 @@ def get_initial_data(old_config=None):
         },
         "auto_answer": True,
         "answer_config": {"answer_delay": {"type": 1, "custom": {"percent": 50}}},
+        "email_config": {
+            "enabled": False,
+            "smtp_server": "",
+            "smtp_port": 465,
+            "username": "",
+            "password": "",
+            "sender": "",
+            "recipient": "",
+            "subject": "雨课堂助手通知",
+            "use_ssl": True,
+            "starttls": True,
+            "timeout": 10,
+        },
         "sign_config": {
             "delay_time": {"type": 1, "custom": {"time": 120, "cutoff": 120}}
         },
@@ -272,15 +356,30 @@ def get_initial_data(old_config=None):
 
 def get_config_path():
     # 获取配置文件路径
-    config_route = get_config_dir() + "\\config.json"
-    return config_route
+    config_dir = get_config_dir()
+    os.makedirs(config_dir, exist_ok=True)
+    config_path = os.path.join(config_dir, "config.json")
+
+    old_config_path = os.path.join(get_appdata_config_dir(), "config.json")
+    if not os.path.exists(config_path) and os.path.exists(old_config_path):
+        shutil.copy2(old_config_path, config_path)
+
+    return config_path
 
 
 def get_config_dir():
     # 获取配置文件所在文件夹
+    return get_project_root()
+
+
+def get_project_root():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def get_appdata_config_dir():
+    # 获取旧版APPDATA配置文件所在文件夹
     appdata_route = os.environ["APPDATA"]
-    dir_route = appdata_route + "\\RainClassroomAssistant"
-    return dir_route
+    return os.path.join(appdata_route, "RainClassroomAssistant")
 
 
 def get_user_info(sessionid, region):

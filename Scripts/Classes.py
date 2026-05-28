@@ -12,6 +12,7 @@ import websocket
 from .PPTManager import PPTManager
 from .AIAnswerAnalyzer import AIAnswerAnalyzer
 from .AsyncDownloader import AsyncPPTDownloadManager
+from .Logger import logger
 from .Utils import (
     calculate_waittime,
     dict_result,
@@ -36,6 +37,7 @@ class Lesson:
         self.danmu_dict = {}
         self.problems_ls = []
         self.problems_dict = {}
+        self.problem_display_indexes = {}
         self.unlocked_problem = []
         self.classmates_ls = []
         self.add_message = main_ui.add_message_signal.emit
@@ -137,7 +139,7 @@ class Lesson:
                 return
                 
             presentation_title = data["title"]
-            slides_data = data["slides"]
+            slides_data = self._apply_problem_display_indexes(data["slides"])
             
             # 构建图片缓存路径
             img_cache_path = ppt_manager.imgpath
@@ -163,14 +165,96 @@ class Lesson:
         except Exception as e:
             self.add_message(f"启动AI分析失败: {str(e)}", 0)
 
-    def download_ppt(self, presentationid):
+    def _record_problem_display_indexes(self, events):
+        """记录课堂事件流中的题目显示页码。"""
+        if not hasattr(self, "problem_display_indexes"):
+            self.problem_display_indexes = {}
+
+        for event in events or []:
+            if event.get("type") != "problem":
+                continue
+
+            display_index = event.get("si")
+            if display_index is None:
+                continue
+
+            for problem_id in (event.get("prob"), event.get("sid")):
+                if problem_id:
+                    self.problem_display_indexes[str(problem_id)] = display_index
+
+    def _problem_identifiers(self, slide):
+        problem = slide.get("problem", {})
+        identifiers = []
+        for value in (
+            problem.get("problemId"),
+            problem.get("id"),
+            problem.get("sid"),
+            slide.get("id"),
+            slide.get("slideId"),
+        ):
+            if value:
+                identifiers.append(str(value))
+        return identifiers
+
+    def _apply_problem_display_indexes(self, slides):
+        """用事件流中的题目显示页码覆盖 fetch 返回的题目页码。"""
+        if not getattr(self, "problem_display_indexes", None):
+            return slides
+
+        adjusted_slides = []
+        for slide in slides:
+            if "problem" not in slide:
+                adjusted_slides.append(slide)
+                continue
+
+            display_index = None
+            for problem_id in self._problem_identifiers(slide):
+                display_index = self.problem_display_indexes.get(problem_id)
+                if display_index is not None:
+                    break
+            if display_index is None:
+                adjusted_slides.append(slide)
+                continue
+
+            slide["index"] = display_index
+            adjusted_slides.append(slide)
+
+        return adjusted_slides
+
+    def _prefer_problem_slides_on_index_conflict(self, slides):
+        """题目页码被事件流修正后，保留同页码的题目页。"""
+        slide_by_index = {}
+        for slide in slides:
+            slide_index = slide.get("index")
+            existing_slide = slide_by_index.get(slide_index)
+            if existing_slide is None or (
+                "problem" in slide and "problem" not in existing_slide
+            ):
+                slide_by_index[slide_index] = slide
+
+        return list(slide_by_index.values())
+
+    def _normalize_slides_with_problem_display_indexes(self, data):
+        if "slides" not in data:
+            return data
+
+        data["slides"] = self._prefer_problem_slides_on_index_conflict(
+            self._apply_problem_display_indexes(data["slides"])
+        )
+        return data
+
+    def download_ppt(self, presentationid, force_refresh=False):
         """使用协程异步下载PPT"""
         self._ensure_download_tracking()
-        if (
+        if not force_refresh and (
             presentationid in self.downloaded_presentations
             or presentationid in self.downloading_presentations
         ):
             return
+
+        if force_refresh:
+            self.downloaded_presentations.discard(presentationid)
+            self.downloading_presentations.discard(presentationid)
 
         self.downloading_presentations.add(presentationid)
         
@@ -181,7 +265,13 @@ class Lesson:
                 asyncio.set_event_loop(loop)
                 try:
                     ppt_data = self._get_ppt(presentationid)
-                    loop.run_until_complete(self._async_download(ppt_data, presentationid))
+                    loop.run_until_complete(
+                        self._async_download(
+                            ppt_data,
+                            presentationid,
+                            force_refresh=force_refresh,
+                        )
+                    )
                 finally:
                     loop.close()
             except Exception as e:
@@ -192,7 +282,7 @@ class Lesson:
         # 在线程池中执行异步下载
         self._executor.submit(run_async_download)
     
-    async def _async_download(self, data, presentation_id=None):
+    async def _async_download(self, data, presentation_id=None, force_refresh=False):
         """异步下载方法"""
         try:
             presentation_title = data.get("title", "未知演示文稿")
@@ -201,6 +291,11 @@ class Lesson:
             if presentation_id is None:
                 presentation_id = getattr(self, '_current_presentation_id', None)
 
+            data = self._normalize_slides_with_problem_display_indexes(data)
+            ppt_manager = PPTManager(data, self.lessonname)
+            if force_refresh:
+                ppt_manager.delete_cache()
+
             download_manager = self.async_download_manager
             if presentation_id:
                 download_manager.set_data_refresh_callback(presentation_id, self._get_ppt)
@@ -208,7 +303,6 @@ class Lesson:
             # 使用异步下载管理器，传入课程名称
             download_result = await download_manager.download_presentation(data, self.lessonname)
 
-            ppt_manager = PPTManager(data, self.lessonname)
             missing_images = ppt_manager.get_missing_images()
             if download_result.get("failed", 0) > 0 or missing_images:
                 self.add_message(
@@ -273,11 +367,22 @@ class Lesson:
     def get_problems(self, presentationid):
         # 获取课程ppt中的题目
         data = self._get_ppt(presentationid)
-        slides = [problem for problem in data["slides"] if "problem" in problem.keys()]
+        slides = [
+            problem
+            for problem in self._apply_problem_display_indexes(data["slides"])
+            if "problem" in problem.keys()
+        ]
         index = [problem["index"] for problem in slides]
         problems = [problem["problem"] for problem in slides]
         for i in range(len(problems)):
             problems[i]["index"] = index[i]
+            slide_ids = []
+            for slide_id in (slides[i].get("id"), slides[i].get("slideId")):
+                if slide_id and slide_id not in slide_ids:
+                    slide_ids.append(slide_id)
+            if slide_ids:
+                problems[i]["slideId"] = slide_ids[0]
+                problems[i]["slideIds"] = slide_ids
             
         return problems
 
@@ -431,10 +536,19 @@ class Lesson:
         wsapp.send(json.dumps(self.handshark))
 
     def checkin_class(self):
+        url = f"https://{get_host(self.config['region'])}/api/v3/lesson/checkin"
+        payload = {"source": 5, "lessonId": self.lessonid}
+        logger.info(
+            "开始课程签到: lessonid={}, lessonname={}, url={}, payload={}",
+            self.lessonid,
+            self.lessonname,
+            url,
+            payload,
+        )
         r = requests.post(
-            url=f"https://{get_host(self.config['region'])}/api/v3/lesson/checkin",
+            url=url,
             headers=self.headers,
-            data=json.dumps({"source": 5, "lessonId": self.lessonid}),
+            data=json.dumps(payload),
             proxies={"http": None, "https": None},
         )
         set_auth = r.headers.get("Set-Auth", None)
@@ -443,8 +557,35 @@ class Lesson:
             set_auth = r.headers.get("Set-Auth", None)
             times += 1
             time.sleep(1)
-        self.headers["Authorization"] = "Bearer %s" % set_auth
-        return dict_result(r.text)["data"]["lessonToken"]
+
+        logger.info(
+            "课程签到响应: lessonid={}, status_code={}, set_auth_present={}, body_preview={}",
+            self.lessonid,
+            r.status_code,
+            bool(set_auth),
+            r.text[:500] if isinstance(r.text, str) else repr(r.text),
+        )
+
+        result = dict_result(r.text)
+        data = result.get("data")
+        if not isinstance(data, dict) or not data.get("lessonToken"):
+            logger.error(
+                "课程签到响应异常: lessonid={}, result={}, headers={}",
+                self.lessonid,
+                result,
+                dict(r.headers),
+            )
+            self.add_message(
+                f"{self.lessonname}课程签到失败，请检查登录状态、区域配置或课程状态",
+                2,
+            )
+            raise RuntimeError(
+                f"课程签到失败: lessonid={self.lessonid}, code={result.get('code')}, msg={result.get('msg')}"
+            )
+
+        if set_auth:
+            self.headers["Authorization"] = "Bearer %s" % set_auth
+        return data["lessonToken"]
 
     def on_message(self, wsapp, message):
         data = dict_result(message)
@@ -453,6 +594,7 @@ class Lesson:
             print(op)
             self.add_message(op, 0)
         if op == "hello":
+            self._record_problem_display_indexes(data.get("timeline", []))
             presentations = list(
                 set(
                     [
@@ -492,6 +634,15 @@ class Lesson:
             for problemid in self.unlocked_problem:
                 self._current_problem(wsapp, problemid)
         elif op == "unlockproblem":
+            problem = data.get("problem", {})
+            self._record_problem_display_indexes([
+                {
+                    "type": "problem",
+                    "prob": problem.get("prob"),
+                    "sid": problem.get("sid"),
+                    "si": problem.get("si"),
+                }
+            ])
             self.start_answer(data["problem"]["sid"], data["problem"]["limit"])
         elif op == "lessonfinished":
             meg = "%s下课了" % self.lessonname
@@ -508,11 +659,7 @@ class Lesson:
                 
                 self._ensure_download_tracking()
                 
-                if (
-                    presentation_id not in self.downloaded_presentations
-                    and presentation_id not in self.downloading_presentations
-                ):
-                    self.download_ppt(presentation_id)
+                self.download_ppt(presentation_id, force_refresh=True)
             else:
                 self.add_message("警告：presentationupdated消息中缺少'presentation'字段", 1)
         elif op == "presentationcreated":
@@ -633,7 +780,14 @@ class Lesson:
 
     def start_answer(self, problemid, limit):
         for promble in self.problems_ls:
-            if promble["problemId"] == problemid:
+            problem_identifiers = (
+                promble.get("problemId"),
+                promble.get("id"),
+                promble.get("sid"),
+                promble.get("slideId"),
+                *(promble.get("slideIds", []) or []),
+            )
+            if str(problemid) in [str(identifier) for identifier in problem_identifiers if identifier]:
                 if promble["result"] is not None:
                     # 如果该题已经作答过，直接跳出函数以忽略该题
                     # 该情况理论上只会出现在启动监听时
@@ -680,39 +834,52 @@ class Lesson:
         wsapp.send(json.dumps(query_problem))
 
     def start_lesson(self, delay, callback):
-        self.auth = self.checkin_class()
-        rtn = self.get_lesson_info()
-        teacher = rtn["teacher"]["name"]
-        title = rtn["title"]
-        timestamp = rtn["startTime"] // 1000
-        time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
-        index = self.main_ui.tableWidget.rowCount()
-        self.add_course([self.lessonname, title, teacher, time_str], index)
-        if self.lessonname.find("清华实践") != -1:
-            meg = "%s测试课程，不进行监听" % self.lessonname
+        index = None
+        try:
+            self.auth = self.checkin_class()
+            rtn = self.get_lesson_info()
+            teacher = rtn["teacher"]["name"]
+            title = rtn["title"]
+            timestamp = rtn["startTime"] // 1000
+            time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+            index = self.main_ui.tableWidget.rowCount()
+            self.add_course([self.lessonname, title, teacher, time_str], index)
+            if self.lessonname.find("清华实践") != -1:
+                meg = "%s测试课程，不进行监听" % self.lessonname
+                self.add_message(meg, 7)
+                return callback(self)
+            if (
+                int(time.time()) - timestamp
+                <= self.config["sign_config"]["delay_time"]["custom"]["cutoff"]
+                and delay > 0
+            ):
+                meg = f"检测到课程{self.lessonname}正在上课，将于{delay}秒后加入监听列表"
+                self.add_message(meg, 7)
+                time.sleep(delay)
+            else:
+                meg = f"检测到课程{self.lessonname}正在上课，已加入监听列表"
+                self.add_message(meg, 7)
+            self.wsapp = websocket.WebSocketApp(
+                url=f"wss://{get_host(self.config['region'])}/wsapp/",
+                header=self.headers,
+                on_open=self.on_open,
+                on_message=self.on_message,
+            )
+            self.wsapp.run_forever()
+            meg = "%s监听结束" % self.lessonname
             self.add_message(meg, 7)
-            return callback(self)
-        if (
-            int(time.time()) - timestamp
-            <= self.config["sign_config"]["delay_time"]["custom"]["cutoff"]
-            and delay > 0
-        ):
-            meg = f"检测到课程{self.lessonname}正在上课，将于{delay}秒后加入监听列表"
-            self.add_message(meg, 7)
-            time.sleep(delay)
-        else:
-            meg = f"检测到课程{self.lessonname}正在上课，已加入监听列表"
-            self.add_message(meg, 7)
-        self.wsapp = websocket.WebSocketApp(
-            url=f"wss://{get_host(self.config['region'])}/wsapp/",
-            header=self.headers,
-            on_open=self.on_open,
-            on_message=self.on_message,
-        )
-        self.wsapp.run_forever()
-        meg = "%s监听结束" % self.lessonname
-        self.add_message(meg, 7)
-        self.del_course(index)
+        except Exception as exc:
+            logger.exception(
+                "课程监听线程异常: lessonid={}, lessonname={}, exc={}",
+                self.lessonid,
+                self.lessonname,
+                exc,
+            )
+            self.add_message(f"{self.lessonname}监听异常: {exc}", 2)
+            raise
+        finally:
+            if index is not None:
+                self.del_course(index)
         # threading.Thread(target=say_something,args=(meg,)).start()
         return callback(self)
 

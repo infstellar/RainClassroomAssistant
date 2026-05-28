@@ -113,6 +113,69 @@ class AIAnswerAnalyzer:
             except Exception as e:
                 self._log(f"加载缓存失败: {e}")
         return None
+
+    def _problem_identifier(self, slide: dict) -> str:
+        problem = slide.get("problem", {})
+        for value in (
+            problem.get("problemId"),
+            problem.get("id"),
+            problem.get("sid"),
+            slide.get("id"),
+            slide.get("slideId"),
+        ):
+            if value:
+                return str(value)
+        return ""
+
+    def _problem_signature(self, slides_info: List[dict] = None) -> List[dict]:
+        signature = []
+        for slide in slides_info or []:
+            if "problem" not in slide:
+                continue
+            signature.append(
+                {
+                    "index": str(slide.get("index", "")),
+                    "id": self._problem_identifier(slide),
+                }
+            )
+        return signature
+
+    def load_cached_answers_for_slides(
+        self,
+        lesson_name: str,
+        presentation_title: str,
+        slides_info: List[dict],
+    ) -> Optional[Dict]:
+        """仅在缓存和当前题目页/题目ID一致时加载答案。"""
+        cache_file = self.get_cache_file_path(lesson_name, presentation_title)
+        if not os.path.exists(cache_file):
+            return None
+
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+        except Exception as e:
+            self._log(f"加载缓存失败: {e}")
+            return None
+
+        current_signature = self._problem_signature(slides_info)
+        if isinstance(cache_data, dict) and "metadata" in cache_data:
+            cached_signature = cache_data.get("metadata", {}).get("problem_signature")
+            if cached_signature is not None and cached_signature != current_signature:
+                self._log("AI缓存题目签名与当前PPT不一致，重新分析")
+                return None
+
+        cached_answers = self.load_cached_answers(lesson_name, presentation_title)
+        if not cached_answers:
+            return None
+
+        current_indexes = {item["index"] for item in current_signature}
+        cached_indexes = set(str(index) for index in cached_answers.keys())
+        if not current_indexes.issubset(cached_indexes):
+            self._log("AI缓存未覆盖当前PPT的全部题目页，重新分析")
+            return None
+
+        return cached_answers
         
     def save_cached_answers(self, lesson_name: str, presentation_title: str, answers: Dict, 
                           slides_info: List[dict] = None, analysis_status: str = "completed"):
@@ -149,6 +212,7 @@ class AIAnswerAnalyzer:
                     "ai_model": self.model if hasattr(self, 'model') else "unknown",
                     "total_slides": len(slides_info) if slides_info else 0,
                     "ai_analyzed_slides": len(answers),
+                    "problem_signature": self._problem_signature(slides_info),
                     "manual_template_generated": analysis_status in ["partial", "failed"],
                     "version": "2.0",
                     "instructions": {
@@ -463,7 +527,13 @@ class AIAnswerAnalyzer:
             self._log(f"开始AI分析: {presentation_title}")
             
             # 首先检查是否已有缓存的答案
-            cached_answers = self.load_cached_answers(lesson_name, presentation_title)
+            problem_slides = [slide for slide in slides_data if "problem" in slide.keys()]
+
+            cached_answers = self.load_cached_answers_for_slides(
+                lesson_name,
+                presentation_title,
+                problem_slides,
+            )
             if cached_answers:
                 self._log(f"发现缓存的AI答案，共 {len(cached_answers)} 个问题")
                 # 调用回调函数
@@ -474,9 +544,6 @@ class AIAnswerAnalyzer:
             # 如果没有缓存，则进行AI分析
             answers_cache = {}
             failed_slides = []
-            
-            # 获取包含问题的幻灯片
-            problem_slides = [slide for slide in slides_data if "problem" in slide.keys()]
             
             for slide in problem_slides:
                 slide_index = slide['index']

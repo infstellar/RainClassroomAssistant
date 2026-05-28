@@ -7,9 +7,23 @@ import asyncio
 import aiohttp
 import aiofiles
 import os
+import threading
+import weakref
 from typing import List, Dict, Optional, Callable, Any
 from PIL import Image
 import time
+
+try:
+    from loguru import logger
+except ImportError:
+    class _FallbackLogger:
+        def error(self, message):
+            print(message)
+
+        def warning(self, message):
+            print(message)
+
+    logger = _FallbackLogger()
 
 
 class AsyncImageDownloader:
@@ -36,20 +50,25 @@ class AsyncImageDownloader:
         self.max_retries = max_retries
         self.progress_callback = progress_callback
         self.skip_existing = skip_existing
-        self._semaphore = None  # 延迟初始化，避免事件循环绑定问题
+        self._semaphores = weakref.WeakKeyDictionary()
+        self._semaphore_lock = threading.Lock()
+        self._semaphore = None  # 兼容旧测试/调试输出；实际使用按事件循环缓存
         
     @property
     def semaphore(self):
         """获取或创建Semaphore实例，确保在正确的事件循环中创建"""
-        if self._semaphore is None:
-            try:
-                # 尝试获取当前事件循环
-                loop = asyncio.get_running_loop()
-                self._semaphore = asyncio.Semaphore(self.max_concurrent)
-            except RuntimeError:
-                # 如果没有运行中的事件循环，创建一个新的
-                self._semaphore = asyncio.Semaphore(self.max_concurrent)
-        return self._semaphore
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+
+        with self._semaphore_lock:
+            semaphore = self._semaphores.get(loop)
+            if semaphore is None or loop.is_closed():
+                semaphore = asyncio.Semaphore(self.max_concurrent)
+                self._semaphores[loop] = semaphore
+                self._semaphore = semaphore
+            return semaphore
 
     async def download_image(self, 
                            session: aiohttp.ClientSession,
@@ -86,7 +105,6 @@ class AsyncImageDownloader:
                     # 下载图片
                     async with session.get(url, timeout=self.timeout) as response:
                         if response.status != 200:
-                            from loguru import logger
                             logger.error(f"HTTP {response.status} 错误: {url}")
                             raise aiohttp.ClientError(f"HTTP {response.status}")
                             
@@ -261,7 +279,6 @@ class AsyncImageDownloader:
         # 统计结果
         successful = []
         failed = []
-        from loguru import logger
         for result in results:
             if isinstance(result, Exception):
                 
