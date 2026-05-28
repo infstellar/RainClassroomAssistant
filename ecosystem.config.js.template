@@ -1,0 +1,9 @@
+module.exports = {
+  apps : [{
+    name: 'RainClassroomAssistant',
+    script: 'RainClassroomAssistant.py',
+    interpreter: 'your-python-interpreter-path',
+    cwd: "your-project-directory",
+    autorestart: false,
+  }],
+};

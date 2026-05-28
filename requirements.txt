@@ -3,6 +3,7 @@ pyttsx3
 requests
 urllib3
 websocket_client
+aiofiles
 fpdf
 numpy
 deepDiff

@@ -412,6 +412,7 @@ class AsyncPPTDownloadManager:
         """
         remaining_slides = slides.copy()
         all_successful = []
+        successful_count = 0
         
         for attempt in range(self.max_retries):
             if not remaining_slides:
@@ -423,6 +424,7 @@ class AsyncPPTDownloadManager:
             
             # 收集成功的下载
             all_successful.extend(result["success_list"])
+            successful_count += result.get("successful", len(result["success_list"]))
             
             # 准备重试失败的项目
             if result["failed_list"] and attempt < self.max_retries - 1:
@@ -471,8 +473,8 @@ class AsyncPPTDownloadManager:
         
         return {
             "total": len(slides),
-            "successful": len(all_successful),
-            "failed": len(slides) - len(all_successful),
+            "successful": successful_count,
+            "failed": max(0, len(slides) - successful_count),
             "success_list": all_successful
         }
     

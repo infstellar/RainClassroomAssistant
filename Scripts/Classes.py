@@ -70,6 +70,12 @@ class Lesson:
         self._async_download_manager = None
         self._executor = ThreadPoolExecutor(max_workers=4)
 
+    def _ensure_download_tracking(self):
+        if not hasattr(self, 'downloaded_presentations'):
+            self.downloaded_presentations = set()
+        if not hasattr(self, 'downloading_presentations'):
+            self.downloading_presentations = set()
+
     @property
     def ai_analyzer(self):
         """延迟初始化AI答案分析器"""
@@ -159,8 +165,14 @@ class Lesson:
 
     def download_ppt(self, presentationid):
         """使用协程异步下载PPT"""
-        # 存储当前presentation_id，用于数据刷新
-        self._current_presentation_id = presentationid
+        self._ensure_download_tracking()
+        if (
+            presentationid in self.downloaded_presentations
+            or presentationid in self.downloading_presentations
+        ):
+            return
+
+        self.downloading_presentations.add(presentationid)
         
         def run_async_download():
             try:
@@ -169,23 +181,46 @@ class Lesson:
                 asyncio.set_event_loop(loop)
                 try:
                     ppt_data = self._get_ppt(presentationid)
-                    loop.run_until_complete(self._async_download(ppt_data))
+                    loop.run_until_complete(self._async_download(ppt_data, presentationid))
                 finally:
                     loop.close()
             except Exception as e:
                 self.add_message(f"异步下载失败: {str(e)}", 0)
+            finally:
+                self.downloading_presentations.discard(presentationid)
         
         # 在线程池中执行异步下载
         self._executor.submit(run_async_download)
     
-    async def _async_download(self, data):
+    async def _async_download(self, data, presentation_id=None):
         """异步下载方法"""
         try:
             presentation_title = data.get("title", "未知演示文稿")
             self.add_message(f"开始异步下载: {presentation_title}", 0)
             
+            if presentation_id is None:
+                presentation_id = getattr(self, '_current_presentation_id', None)
+
+            download_manager = self.async_download_manager
+            if presentation_id:
+                download_manager.set_data_refresh_callback(presentation_id, self._get_ppt)
+
             # 使用异步下载管理器，传入课程名称
-            await self.async_download_manager.download_presentation(data, self.lessonname)
+            download_result = await download_manager.download_presentation(data, self.lessonname)
+
+            ppt_manager = PPTManager(data, self.lessonname)
+            missing_images = ppt_manager.get_missing_images()
+            if download_result.get("failed", 0) > 0 or missing_images:
+                self.add_message(
+                    f"图片下载未完成: {presentation_title}，将保留为待重试",
+                    2,
+                )
+                if missing_images:
+                    self.add_message(
+                        f"仍缺少 {len(missing_images)} 张图片，跳过PDF生成",
+                        2,
+                    )
+                return
             
             self.add_message(f"图片下载完成: {presentation_title}", 0)
             
@@ -193,14 +228,14 @@ class Lesson:
             try:
                 self.add_message(f"开始生成PDF: {presentation_title}", 0)
                 
-                # 创建PPTManager实例来生成PDF
-                ppt_manager = PPTManager(data, self.lessonname)
-                
                 # 直接调用generate_ppt方法生成PDF（跳过下载步骤，因为图片已经下载完成）
                 pdf_name = ppt_manager.generate_ppt()
                 
                 if pdf_name:
                     self.add_message(f"PDF生成成功: {pdf_name}", 0)
+                    self._ensure_download_tracking()
+                    if presentation_id:
+                        self.downloaded_presentations.add(presentation_id)
                     
                     # 启动AI分析
                     self._start_ai_analysis(data, ppt_manager)
@@ -320,19 +355,33 @@ class Lesson:
                 )
                 self.add_message(meg, 3)
                 # threading.Thread(target=say_something,args=(meg,)).start()
+            submit_answer = self._format_answer_for_submit(problemtype, answer)
             data = {
                 "problemId": problemid,
                 "problemType": problemtype,
                 "dt": int(time.time()),
-                "result": answer,
+                "result": submit_answer,
             }
+            self.add_message(f"[DEBUG] 答题提交payload: {data}", 0)
             r = requests.post(
                 url=f"https://{get_host(self.config['region'])}/api/v3/lesson/problem/answer",
                 headers=self.headers,
                 data=json.dumps(data),
                 proxies={"http": None, "https": None},
             )
-            return_dict = dict_result(r.text)
+            self.add_message(
+                f"[DEBUG] 答题提交响应: status={getattr(r, 'status_code', 'unknown')}, body={r.text[:500]}",
+                0,
+            )
+            try:
+                return_dict = dict_result(r.text)
+            except ValueError as e:
+                meg = "%s自动回答失败，响应解析错误：%s" % (
+                    self.lessonname,
+                    e,
+                )
+                self.add_message(meg, 4)
+                return False
             if return_dict["code"] == 0:
                 meg = "%s自动回答成功" % self.lessonname
                 self.add_message(meg, 4)
@@ -359,6 +408,17 @@ class Lesson:
             # threading.Thread(target=say_something,args=(meg,)).start()
             self.add_message(meg, 4)
             return False
+
+    def _format_answer_for_submit(self, problemtype, answer):
+        if problemtype == 4 and isinstance(answer, list):
+            return {str(index): value for index, value in enumerate(answer)}
+        if problemtype == 5:
+            if isinstance(answer, list):
+                content = "\n".join(str(value).strip('"') for value in answer)
+            else:
+                content = str(answer).strip('"')
+            return {"content": content, "pics": [{"pic": "", "thumb": ""}]}
+        return answer
 
     def on_open(self, wsapp):
         self.handshark = {
@@ -410,9 +470,7 @@ class Lesson:
             elif current_presentation is None:
                 self.add_message("警告：WebSocket消息中缺少'presentation'字段", 1)
             
-            # 初始化已下载的presentation集合（如果不存在）
-            if not hasattr(self, 'downloaded_presentations'):
-                self.downloaded_presentations = set()
+            self._ensure_download_tracking()
             
             for presentationid in presentations:
                 # print(presentationid)
@@ -421,9 +479,11 @@ class Lesson:
                     self.problems_dict[problem["index"]] = problem["answers"]
                 
                 # 检查是否已经下载过此presentation
-                if presentationid not in self.downloaded_presentations:
+                if (
+                    presentationid not in self.downloaded_presentations
+                    and presentationid not in self.downloading_presentations
+                ):
                     self.download_ppt(presentationid)
-                    self.downloaded_presentations.add(presentationid)
             
             # 安全地获取unlockedproblem字段
             self.unlocked_problem = data.get("unlockedproblem", [])
@@ -446,13 +506,13 @@ class Lesson:
                 for problem in self.problems_ls:
                     self.problems_dict[problem["index"]] = problem["answers"]
                 
-                # 检查是否已经下载过此presentation
-                if not hasattr(self, 'downloaded_presentations'):
-                    self.downloaded_presentations = set()
+                self._ensure_download_tracking()
                 
-                if presentation_id not in self.downloaded_presentations:
+                if (
+                    presentation_id not in self.downloaded_presentations
+                    and presentation_id not in self.downloading_presentations
+                ):
                     self.download_ppt(presentation_id)
-                    self.downloaded_presentations.add(presentation_id)
             else:
                 self.add_message("警告：presentationupdated消息中缺少'presentation'字段", 1)
         elif op == "presentationcreated":
@@ -463,13 +523,13 @@ class Lesson:
                 for problem in self.problems_ls:
                     self.problems_dict[problem["index"]] = problem["answers"]
                 
-                # 检查是否已经下载过此presentation
-                if not hasattr(self, 'downloaded_presentations'):
-                    self.downloaded_presentations = set()
+                self._ensure_download_tracking()
                 
-                if presentation_id not in self.downloaded_presentations:
+                if (
+                    presentation_id not in self.downloaded_presentations
+                    and presentation_id not in self.downloading_presentations
+                ):
                     self.download_ppt(presentation_id)
-                    self.downloaded_presentations.add(presentation_id)
             else:
                 self.add_message("警告：presentationcreated消息中缺少'presentation'字段", 1)
         elif op == "newdanmu" and self.config["auto_danmu"]:

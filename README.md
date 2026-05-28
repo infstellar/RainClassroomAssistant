@@ -28,7 +28,7 @@
 
 - 参数配置：重命名ai_config_example.json为ai_config.json，然后填写参数
 
-> 已知问题：只有第一次启动前填参数有效，因为原项目会把配置复制到USERDATA下。未来可能修复。
+> 程序启动时会自动将 `ai_config.json` 中的 AI 配置同步到 `%APPDATA%\RainClassroomAssistant\config.json`，修改后重启程序即可生效。
 
 1. PPT下载完之后，会提取PPT的所有问题；
 2. Scripts\AIAnswerAnalyzer.py 会拿着问题PPT发给AI；

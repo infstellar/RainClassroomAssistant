@@ -16,7 +16,6 @@ import re
 import threading
 import traceback
 
-from deepdiff import DeepDiff
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Scripts.Monitor import monitor
@@ -307,8 +306,8 @@ class MainWindow_Ui(QtCore.QObject):
         config_ui.enable_delay_custom()
         if dialog.exec_():
             config_route = get_config_path()
-            with open(config_route, "r") as f:
-                self.config = json.load(f)
+            with open(config_route, "r", encoding="utf-8") as f:
+                self.config = get_initial_data(json.load(f))
 
     def show_login(self, _bool=False, rtn_message=""):
         # 展示登录对话框
@@ -327,8 +326,8 @@ class MainWindow_Ui(QtCore.QObject):
         print(success)
         if success:
             config_route = get_config_path()
-            with open(config_route, "r") as f:
-                self.config = json.load(f)
+            with open(config_route, "r", encoding="utf-8") as f:
+                self.config = get_initial_data(json.load(f))
         # 删除涉及登录的线程
         login_ui.close_all()
         # 再次检测登录状态
@@ -352,35 +351,33 @@ class MainWindow_Ui(QtCore.QObject):
         # 检查配置文件存在性及可用性
         if not os.path.exists(config_route):
             initial_data = get_initial_data()
-            f = open(config_route, "w+")
-            json.dump(initial_data, f)
-            f.close()
+            with open(config_route, "w+", encoding="utf-8") as f:
+                json.dump(initial_data, f, ensure_ascii=False, indent=2)
             self.add_message_signal.emit("没有检测到配置文件，已自动创建", 0)
             return initial_data
         else:
             try:
-                with open(config_route, "r") as f:
+                with open(config_route, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    info = DeepDiff(get_initial_data(), data)
-                    for key in info:
-                        if (
-                            key == "dictionary_item_added"
-                            or key == "dictionary_item_removed"
-                        ):
-                            self.add_message_signal.emit(info, 0)
-                            raise Exception
+
+                normalized_data = get_initial_data(data)
+                if data != normalized_data:
+                    with open(config_route, "w+", encoding="utf-8") as f:
+                        json.dump(normalized_data, f, ensure_ascii=False, indent=2)
+                    self.add_message_signal.emit("配置文件已同步更新", 0)
+                else:
                     self.add_message_signal.emit("配置文件已读取", 0)
-                    return data
+                return normalized_data
             except:
                 old_config = None
                 try:
-                    with open(config_route, "r") as f:
+                    with open(config_route, "r", encoding="utf-8") as f:
                         old_config = json.load(f)
                 except:
                     pass
-                with open(config_route, "w+") as f:
+                with open(config_route, "w+", encoding="utf-8") as f:
                     initial_data = get_initial_data(old_config)
-                    json.dump(initial_data, f)
+                    json.dump(initial_data, f, ensure_ascii=False, indent=2)
                     self.add_message_signal.emit("配置文件读取失败，已重新生成", 0)
                     return initial_data
 

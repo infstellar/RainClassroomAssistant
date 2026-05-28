@@ -8,3 +8,5 @@ downloads
 ai_answers_cache/
 .history/
 ai_config.json
+ecosystem.config.js
+answer_request_har.txt

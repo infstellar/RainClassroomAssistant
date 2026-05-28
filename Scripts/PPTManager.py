@@ -384,6 +384,15 @@ class PPTManager:
         if self.title_dict.get(self.title) is None:
             return None, None
         self.download()
+        missing_images = self.get_missing_images()
+        if missing_images:
+            print(f"图片下载未完成，跳过PDF生成: {len(missing_images)} 张图片缺失或无效")
+            for slide in missing_images:
+                url_status = "URL为空" if not slide.get("cover") else slide.get("cover", "URL未知")
+                print(f"  - 图片 {slide['index']}: {url_status}")
+            if self.title in self.title_dict:
+                del self.title_dict[self.title]
+            return None, None
         pdfname = self.generate_ppt()
         # self.delete_cache()
         usetime = round(time.time() - float(self.timestamp), 4)

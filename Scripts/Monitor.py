@@ -75,6 +75,7 @@ def monitor(main_ui):
                             ],
                         ),
                     )
+                    delay_time = 0
                 else:
                     delay_time = 0
                 thread = threading.Thread(

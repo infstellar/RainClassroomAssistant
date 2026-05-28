@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import threading
+from copy import deepcopy
 from math import exp
 
 import pyttsx3
@@ -25,6 +26,14 @@ else:
 
 lock = threading.Lock()
 
+AI_CONFIG_KEYS = (
+    "enable_ai_analysis",
+    "openai_api_key",
+    "openai_api_base",
+    "openai_model",
+    "ai_analysis_settings",
+)
+
 
 def is_debug():
     # 判断是否为debug模式
@@ -46,7 +55,11 @@ def show_info(text, title):
     if TOAST_AVAILABLE and toaster:
         try:
             toaster.show_toast(
-                title, text, icon_path=r"UI\Image\favicon.ico", duration=15, threaded=True
+                title,
+                text,
+                icon_path=resource_path(r"UI\Image\favicon.ico"),
+                duration=15,
+                threaded=True,
             )
             toast_success = True
         except Exception as e:
@@ -66,7 +79,16 @@ def show_info(text, title):
 
 def dict_result(text):
     # json string 转 dict object
-    return dict(json.loads(text))
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError as e:
+        preview = text[:200] if isinstance(text, str) else repr(text)
+        raise ValueError(f"Invalid JSON response: {preview}") from e
+
+    if not isinstance(result, dict):
+        raise ValueError(f"Expected JSON object response, got {type(result).__name__}: {result}")
+
+    return result
 
 
 def test_network():
@@ -134,6 +156,66 @@ def calculate_waittime(limit, type, custom_percent=50):
     return int(wait_time)
 
 
+def merge_nested_dict(base, overrides):
+    """递归合并字典，保留base中的默认值。"""
+    merged = deepcopy(base)
+    for key, value in overrides.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = merge_nested_dict(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def merge_known_config(base_config, override_config):
+    """仅合并已知配置项，避免把未知字段写回主配置。"""
+    merged = deepcopy(base_config)
+    for key, value in override_config.items():
+        if key not in merged:
+            continue
+        if isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = merge_nested_dict(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def get_ai_config_paths():
+    """返回ai_config.json的候选路径，按优先级排序。"""
+    return [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ai_config.json")),
+        os.path.join(get_config_dir(), "ai_config.json"),
+        os.path.abspath("ai_config.json"),
+    ]
+
+
+def load_ai_config():
+    """加载ai_config.json，返回(配置字典, 配置路径)。"""
+    for ai_config_path in get_ai_config_paths():
+        if os.path.exists(ai_config_path):
+            with open(ai_config_path, "r", encoding="utf-8") as f:
+                return json.load(f), ai_config_path
+    return None, None
+
+
+def apply_ai_config_overrides(config, ai_config):
+    """将AI配置覆盖到主配置，仅处理AI相关字段。"""
+    merged = deepcopy(config)
+    if not ai_config:
+        return merged
+
+    ai_overrides = {}
+    for key in AI_CONFIG_KEYS:
+        if key in ai_config:
+            ai_overrides[key] = ai_config[key]
+
+    return merge_known_config(merged, ai_overrides)
+
+
 def get_initial_data(old_config=None):
     # 默认配置信息
     initial_data = {
@@ -172,31 +254,14 @@ def get_initial_data(old_config=None):
     }
 
     if old_config:
-        for key in old_config:
-            if key in initial_data:
-                initial_data[key] = old_config[key]
+        initial_data = merge_known_config(initial_data, old_config)
     
     # 尝试加载AI配置文件
     try:
-        # 查找ai_config.json文件
-        possible_paths = [
-            os.path.join(os.path.dirname(__file__), '..', 'ai_config.json'),  # 项目根目录
-            os.path.join(get_config_dir(), 'ai_config.json'),  # 配置目录
-            'ai_config.json'  # 当前目录
-        ]
-        
-        ai_config_loaded = False
-        for ai_config_path in possible_paths:
-            if os.path.exists(ai_config_path):
-                with open(ai_config_path, 'r', encoding='utf-8') as f:
-                    ai_config = json.load(f)
-                # 合并AI配置到主配置
-                for key, value in ai_config.items():
-                    initial_data[key] = value
-                ai_config_loaded = True
-                break
-        
-        if not ai_config_loaded:
+        ai_config, _ = load_ai_config()
+        if ai_config:
+            initial_data = apply_ai_config_overrides(initial_data, ai_config)
+        else:
             print("未找到ai_config.json文件，使用默认AI配置")
             
     except Exception as e:

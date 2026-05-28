@@ -32,6 +32,7 @@ class AIAnswerAnalyzer:
         
         # 分析设置
         ai_settings = config.get('ai_analysis_settings', {})
+        self.protocol = ai_settings.get('protocol', 'responses')
         self.max_retries = ai_settings.get('max_retries', 3)
         self.request_timeout = ai_settings.get('request_timeout', 120)
         self.delay_between_requests = ai_settings.get('delay_between_requests', 1)
@@ -215,6 +216,176 @@ class AIAnswerAnalyzer:
         """将图片编码为base64"""
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
+
+    def _create_request_session(self):
+        """创建不继承系统代理设置的请求会话"""
+        session = requests.Session()
+        session.trust_env = False
+        return session
+
+    def _extract_response_content(self, response) -> str:
+        """从普通JSON或SSE响应中提取文本内容"""
+        def extract_from_chunk(data):
+            if not isinstance(data, dict):
+                return ""
+
+            output_text = data.get("output_text")
+            if output_text:
+                return str(output_text)
+
+            output_items = data.get("output") or []
+            for output_item in output_items:
+                if not isinstance(output_item, dict):
+                    continue
+                for content_item in output_item.get("content") or []:
+                    if not isinstance(content_item, dict):
+                        continue
+                    text = content_item.get("text")
+                    if text:
+                        return str(text)
+
+            delta = data.get("delta")
+            if data.get("type") == "response.output_text.delta" and delta:
+                return str(delta)
+
+            choices = data.get("choices") or []
+            if not choices:
+                return ""
+
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                return ""
+
+            message = choice.get("message") or {}
+            if isinstance(message, dict):
+                content = message.get("content")
+                if content:
+                    return str(content)
+
+            delta = choice.get("delta") or {}
+            if isinstance(delta, dict):
+                content = delta.get("content")
+                if content:
+                    return str(content)
+
+            return ""
+
+        try:
+            data = response.json()
+            content = extract_from_chunk(data)
+            if content:
+                return content.strip()
+        except Exception:
+            pass
+
+        response_text = getattr(response, "text", "") or ""
+        if not response_text:
+            return ""
+
+        has_sse_data = False
+        parts = []
+        for raw_line in response_text.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+
+            has_sse_data = True
+            payload = line[5:].strip()
+            if not payload or payload == "[DONE]":
+                continue
+
+            try:
+                data = json.loads(payload)
+            except Exception:
+                continue
+
+            content = extract_from_chunk(data)
+            if content:
+                parts.append(content)
+
+        if parts:
+            return "".join(parts).strip()
+
+        if has_sse_data:
+            return ""
+
+        return response_text.strip()
+
+    def _build_ai_request(self, api_base: str, model: str, base64_image: str):
+        prompt = "请分析这张PPT图片中的题目，如果有选择题、填空题或其他题目，请提供正确答案。如果是选择题，请返回正确选项的序号（如[1,2]表示A、B选项正确）。如果没有题目，请返回空列表[]。输出最简洁的内容，只输出答案，如果题目是英文，就用英文输出；题目是中文就用中文输出。不要输出任何过程，不要使用 latex 和 markdown 语法。只返回答案数组，不要其他解释。"
+
+        if self.protocol == "chat_completions":
+            payload = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": 900
+            }
+            return f"{api_base.rstrip('/')}/chat/completions", payload
+
+        payload = {
+            "model": model,
+            "reasoning": {
+                "effort": "high"
+            },
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    ]
+                }
+            ],
+            "max_output_tokens": 900
+        }
+        return f"{api_base.rstrip('/')}/responses", payload
+
+    def _parse_answer_array(self, content: str) -> List:
+        """解析模型返回的答案数组"""
+        import re
+
+        match = re.search(r'\[(.*?)\]', content)
+        if not match:
+            return []
+
+        answer_str = match.group(1)
+        if not answer_str.strip():
+            return []
+
+        answers = []
+        for x in answer_str.split(','):
+            item = x.strip()
+            if not item:
+                continue
+            if item.isdigit():
+                answers.append(int(item))
+            elif len(item) == 1 and item.isalpha():
+                answers.append(item.upper())
+            else:
+                answers.append(item)
+        return answers
             
     def analyze_slide_with_openai(self, image_path: str, slide_index: int) -> Optional[List]:
         """使用OpenAI分析单张幻灯片"""
@@ -237,69 +408,48 @@ class AIAnswerAnalyzer:
                 "Authorization": f"Bearer {api_key}"
             }
             
-            payload = {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "请分析这张PPT图片中的题目，如果有选择题、填空题或其他题目，请提供正确答案。如果是选择题，请返回正确选项的序号（如[1,2]表示A、B选项正确）。如果没有题目，请返回空列表[]。只返回答案数组，不要其他解释。"
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                "max_tokens": 900
-            }
-            # print(payload)
-            # 发送请求
-            response = requests.post(
-                f"{api_base}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=120
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content'].strip()
-                print(content)
-                # 尝试解析答案
+            request_url, payload = self._build_ai_request(api_base, model, base64_image)
+            response = None
+            last_error = None
+
+            for attempt in range(self.max_retries + 1):
+                session = self._create_request_session()
                 try:
-                    # 提取数组格式的答案
-                    import re
-                    match = re.search(r'\[(.*?)\]', content)
-                    if match:
-                        answer_str = match.group(1)
-                        if answer_str.strip():
-                            # 解析答案，支持数字、字母选项(A,B,C,D)和文字
-                            answers = []
-                            for x in answer_str.split(','):
-                                item = x.strip()
-                                if item:
-                                    # 如果是数字，转换为整数
-                                    if item.isdigit():
-                                        answers.append(int(item))
-                                    # 如果是单个字母（A-Z），保持原样
-                                    elif len(item) == 1 and item.isalpha():
-                                        answers.append(item.upper())
-                                    # 其他情况（文字答案等），也保持原样
-                                    else:
-                                        answers.append(item)
-                            return answers
-                    return []
-                except:
-                    return []
-            else:
+                    response = session.post(
+                        request_url,
+                        headers=headers,
+                        json=payload,
+                        timeout=self.request_timeout,
+                    )
+                    break
+                except (
+                    requests.exceptions.SSLError,
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                ) as e:
+                    last_error = e
+                    if attempt >= self.max_retries:
+                        raise
+                    self._log(f"OpenAI API请求失败，准备重试 {attempt + 1}/{self.max_retries}: {e}")
+                    time.sleep(min(2 ** attempt, 5))
+                finally:
+                    session.close()
+
+            if response is None:
+                if last_error:
+                    raise last_error
+                return None
+
+            if response.status_code != 200:
                 self._log(f"OpenAI API请求失败: {response.status_code} - {response.text}")
                 return None
+
+            content = self._extract_response_content(response)
+            if not content:
+                self._log("OpenAI API返回空内容")
+                return []
+
+            return self._parse_answer_array(content)
                 
         except Exception as e:
             self._log(f"分析幻灯片失败 {image_path}: {e}")
