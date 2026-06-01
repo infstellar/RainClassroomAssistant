@@ -111,3 +111,28 @@ def test_send_email_notification_uses_smtp_ssl(monkeypatch):
     assert message["From"] == "sender@example.com"
     assert message["To"] == "receiver@example.com"
     assert message.get_content().strip() == "自动答题失败"
+
+
+def test_send_test_email_notification_uses_standard_sender(monkeypatch):
+    sent = {}
+
+    def fake_send_email_notification(message, config):
+        sent["message"] = message
+        sent["config"] = config
+        return True
+
+    config = {
+        "email_config": {
+            "enabled": True,
+            "smtp_server": "smtp.example.com",
+            "username": "sender@example.com",
+            "password": "secret",
+            "recipient": "receiver@example.com",
+        }
+    }
+
+    monkeypatch.setattr(Utils, "send_email_notification", fake_send_email_notification)
+
+    assert Utils.send_test_email_notification(config) is True
+    assert sent["config"] is config
+    assert sent["message"] == "这是一封雨课堂助手测试邮件。收到此邮件表示邮件通知配置可用。"

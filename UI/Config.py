@@ -13,7 +13,7 @@ import json
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from Scripts.Utils import get_config_path, resource_path
+from Scripts.Utils import get_config_path, resource_path, send_test_email_notification
 
 
 class Config_Ui(object):
@@ -226,6 +226,10 @@ class Config_Ui(object):
         self.btn_wid.setObjectName("btn_wid")
         self.horizontalLayout = QtWidgets.QHBoxLayout(self.btn_wid)
         self.horizontalLayout.setObjectName("horizontalLayout")
+        self.test_email_btn = QtWidgets.QPushButton(self.btn_wid)
+        self.test_email_btn.setMaximumSize(QtCore.QSize(16777215, 40))
+        self.test_email_btn.setObjectName("test_email_btn")
+        self.horizontalLayout.addWidget(self.test_email_btn)
         self.save = QtWidgets.QPushButton(self.btn_wid)
         self.save.setMaximumSize(QtCore.QSize(16777215, 40))
         self.save.setObjectName("save")
@@ -247,6 +251,7 @@ class Config_Ui(object):
         self.delay_time_radio_2.clicked.connect(self.enable_delay_custom)
         self.delay_time_radio_3.clicked.connect(self.enable_delay_custom)
         self.delay_time_radio_4.clicked.connect(self.enable_delay_custom)
+        self.test_email_btn.clicked.connect(functools.partial(self.test_email, parent=Dialog))
         self.save.clicked.connect(functools.partial(self.save_config, dialog=Dialog))
 
         self.retranslateUi(Dialog)
@@ -286,6 +291,22 @@ class Config_Ui(object):
             self.when_delay_time_4.setEnabled(False)
         else:
             self.when_delay_time_4.setEnabled(True)
+
+    def test_email(self, parent):
+        if send_test_email_notification(self.dialog_config):
+            QtWidgets.QMessageBox.information(
+                parent,
+                "邮件测试",
+                "测试邮件发送成功，请检查收件箱。",
+                QtWidgets.QMessageBox.Ok,
+            )
+        else:
+            QtWidgets.QMessageBox.warning(
+                parent,
+                "邮件测试",
+                "测试邮件发送失败，请检查邮件配置和网络连接。",
+                QtWidgets.QMessageBox.Ok,
+            )
 
     def load_config(self, config):
         # 签到配置
@@ -444,5 +465,6 @@ class Config_Ui(object):
                 "注：如果您采用自定义延迟时长，当延迟时长大于题目所给时限时，将按照系统默认算法重新计算延迟时长。",
             )
         )
+        self.test_email_btn.setText(_translate("Dialog", "发送测试邮件"))
         self.save.setText(_translate("Dialog", "保存"))
         self.cancel.setText(_translate("Dialog", "取消"))

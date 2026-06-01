@@ -136,6 +136,11 @@ def send_email_notification(message, config):
         return False
 
 
+def send_test_email_notification(config):
+    message = "这是一封雨课堂助手测试邮件。收到此邮件表示邮件通知配置可用。"
+    return send_email_notification(message, config)
+
+
 def send_email_notification_if_needed(message, type, config):
     if type != 4 or not is_email_notification_configured(config):
         return False
