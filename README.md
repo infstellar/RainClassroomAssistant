@@ -35,7 +35,7 @@
 2. Scripts\AIAnswerAnalyzer.py 会拿着问题PPT发给AI；
 3. 生成的答案json会放在ai_answers_cache目录下，文件名是PPT的文件名。
 
-现在，答案json可以人工填写（我是这么干的，因为可以二次验证），填写完后无需重启，每次尝试回答问题会重新加载json保证最新。
+~~现在，答案json可以人工填写（我是这么干的，因为可以二次验证），填写完后无需重启，每次尝试回答问题会重新加载json保证最新。~~ LLM太好用了，已经支持openai response协议。
 
 填写json的方法在答案json中。例：
 ```json
