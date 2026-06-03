@@ -175,6 +175,15 @@ class AIAnswerAnalyzer:
             self._log("AI缓存未覆盖当前PPT的全部题目页，重新分析")
             return None
 
+        empty_answer_indexes = [
+            index for index in current_indexes if not cached_answers.get(index)
+        ]
+        if empty_answer_indexes:
+            self._log(
+                f"AI缓存包含空答案页 {', '.join(sorted(empty_answer_indexes))}，重新分析"
+            )
+            return None
+
         return cached_answers
         
     def save_cached_answers(self, lesson_name: str, presentation_title: str, answers: Dict, 
@@ -553,9 +562,12 @@ class AIAnswerAnalyzer:
                     self._log(f"正在分析幻灯片 {slide_index}...")
                     ai_answers = self.analyze_slide_with_openai(image_path, slide_index)
                     
-                    if ai_answers is not None:
+                    if ai_answers:
                         answers_cache[str(slide_index)] = ai_answers
                         self._log(f"幻灯片 {slide_index} 分析完成，答案: {ai_answers}")
+                    elif ai_answers == []:
+                        self._log(f"幻灯片 {slide_index} 未识别到可用答案")
+                        failed_slides.append(slide)
                     else:
                         self._log(f"幻灯片 {slide_index} 分析失败")
                         failed_slides.append(slide)

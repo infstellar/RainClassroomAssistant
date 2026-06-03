@@ -280,3 +280,86 @@ def test_analyze_presentation_reuses_cache_when_problem_signature_matches(monkey
     )
 
     assert answers == {"9": ["cached"]}
+
+
+def test_analyze_presentation_reanalyzes_empty_cached_answer(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "ai_cache"
+    image_path = tmp_path / "9.jpg"
+    image_path.write_bytes(b"image")
+
+    analyzer = AIAnswerAnalyzer({"enable_ai_analysis": False})
+    analyzer.cache_dir = str(cache_dir)
+    analyzer.ensure_cache_dir()
+    analyzer.save_cached_answers(
+        "lesson",
+        "title",
+        {"9": []},
+        [
+            {
+                "index": 9,
+                "id": "slide-9",
+                "problem": {"problemId": "problem-9"},
+            }
+        ],
+        "completed",
+    )
+
+    calls = []
+
+    def analyze_again(image_path, slide_index):
+        calls.append(slide_index)
+        return ["new"]
+
+    monkeypatch.setattr(analyzer, "analyze_slide_with_openai", analyze_again)
+    monkeypatch.setattr("Scripts.AIAnswerAnalyzer.time.sleep", lambda *_: None)
+
+    answers = analyzer.analyze_presentation(
+        "lesson",
+        "title",
+        [
+            {
+                "index": 9,
+                "id": "slide-9",
+                "problem": {"problemId": "problem-9"},
+            }
+        ],
+        str(tmp_path),
+    )
+
+    assert calls == [9]
+    assert answers == {"9": ["new"]}
+
+
+def test_analyze_presentation_does_not_save_empty_ai_result_as_answer(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "ai_cache"
+    image_path = tmp_path / "9.jpg"
+    image_path.write_bytes(b"image")
+
+    analyzer = AIAnswerAnalyzer({"enable_ai_analysis": False})
+    analyzer.cache_dir = str(cache_dir)
+    analyzer.ensure_cache_dir()
+
+    monkeypatch.setattr(analyzer, "analyze_slide_with_openai", lambda image_path, slide_index: [])
+    monkeypatch.setattr("Scripts.AIAnswerAnalyzer.time.sleep", lambda *_: None)
+
+    answers = analyzer.analyze_presentation(
+        "lesson",
+        "title",
+        [
+            {
+                "index": 9,
+                "id": "slide-9",
+                "problem": {"problemId": "problem-9"},
+            }
+        ],
+        str(tmp_path),
+    )
+
+    cache_file = analyzer.get_cache_file_path("lesson", "title")
+    with open(cache_file, encoding="utf-8") as f:
+        cache_data = json.load(f)
+
+    assert answers == {}
+    assert cache_data["metadata"]["analysis_status"] == "failed"
+    assert cache_data["answers"] == {}
+    assert cache_data["manual_answers"] == {"9": []}
