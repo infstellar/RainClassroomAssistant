@@ -27,7 +27,7 @@
 
 ### LLM回答功能
 
-- 参数配置：重命名ai_config_example.json为ai_config.json，然后填写参数
+- 参数配置：重命名ai_config_example.json为ai_config.json，然后填写参数。完整主配置示例见 `config.example.json`。
 
 > 程序启动时会自动将 `ai_config.json` 中的 AI 配置同步到项目目录下的 `config.json`，修改后重启程序即可生效。
 

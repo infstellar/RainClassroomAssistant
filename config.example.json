@@ -1,0 +1,62 @@
+{
+  "sessionid": "",
+  "region": "1",
+  "auto_danmu": false,
+  "danmu_config": {
+    "danmu_limit": 5
+  },
+  "audio_on": true,
+  "audio_config": {
+    "audio_type": {
+      "send_danmu": false,
+      "others_danmu": false,
+      "receive_problem": true,
+      "answer_result": true,
+      "im_called": true,
+      "others_called": true,
+      "course_info": true,
+      "network_info": true
+    }
+  },
+  "auto_answer": true,
+  "answer_config": {
+    "answer_delay": {
+      "type": 1,
+      "custom": {
+        "percent": 50
+      }
+    }
+  },
+  "email_config": {
+    "enabled": false,
+    "smtp_server": "smtp.example.com",
+    "smtp_port": 465,
+    "username": "sender@example.com",
+    "password": "your-email-authorization-code",
+    "sender": "sender@example.com",
+    "recipient": "receiver@example.com",
+    "subject": "雨课堂助手通知",
+    "use_ssl": true,
+    "starttls": true,
+    "timeout": 10
+  },
+  "sign_config": {
+    "delay_time": {
+      "type": 1,
+      "custom": {
+        "time": 120,
+        "cutoff": 120
+      }
+    }
+  },
+  "enable_ai_analysis": false,
+  "openai_api_key": "your-openai-api-key-here",
+  "openai_api_base": "https://api.openai.com/v1",
+  "openai_model": "gpt-5.5",
+  "ai_analysis_settings": {
+    "protocol": "responses",
+    "max_retries": 3,
+    "request_timeout": 30,
+    "delay_between_requests": 1
+  }
+}
