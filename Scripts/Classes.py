@@ -460,45 +460,64 @@ class Lesson:
                 )
                 self.add_message(meg, 3)
                 # threading.Thread(target=say_something,args=(meg,)).start()
-            submit_answer = self._format_answer_for_submit(problemtype, answer)
-            data = {
-                "problemId": problemid,
-                "problemType": problemtype,
-                "dt": int(time.time()),
-                "result": submit_answer,
-            }
-            self.add_message(f"[DEBUG] 答题提交payload: {data}", 0)
-            r = requests.post(
-                url=f"https://{get_host(self.config['region'])}/api/v3/lesson/problem/answer",
-                headers=self.headers,
-                data=json.dumps(data),
-                proxies={"http": None, "https": None},
-            )
-            self.add_message(
-                f"[DEBUG] 答题提交响应: status={getattr(r, 'status_code', 'unknown')}, body={r.text[:500]}",
-                0,
-            )
             try:
-                return_dict = dict_result(r.text)
+                answer_candidates = self._answer_submit_candidates(problemtype, answer)
             except ValueError as e:
-                meg = "%s自动回答失败，响应解析错误：%s" % (
-                    self.lessonname,
-                    e,
-                )
-                self.add_message(meg, 4)
+                self.add_message(f"{self.lessonname}自动回答失败，答案格式错误：{e}", 4)
                 return False
-            if return_dict["code"] == 0:
-                meg = "%s自动回答成功" % self.lessonname
-                self.add_message(meg, 4)
-                # threading.Thread(target=say_something,args=(meg,)).start()
-                return True
-            else:
-                meg = "%s自动回答失败，原因：%s" % (
-                    self.lessonname,
-                    return_dict["msg"].replace("_", " "),
+            last_parse_error = None
+            for submit_index, submit_answer in enumerate(answer_candidates):
+                data = {
+                    "problemId": problemid,
+                    "problemType": problemtype,
+                    "dt": int(time.time()),
+                    "result": submit_answer,
+                }
+                self.add_message(f"[DEBUG] 答题提交payload: {data}", 0)
+                r = requests.post(
+                    url=f"https://{get_host(self.config['region'])}/api/v3/lesson/problem/answer",
+                    headers=self.headers,
+                    data=json.dumps(data),
+                    proxies={"http": None, "https": None},
                 )
-                self.add_message(meg, 4)
-                # threading.Thread(target=say_something,args=(meg,)).start()
+                response_text = r.text
+                self.add_message(
+                    f"[DEBUG] 答题提交响应: status={getattr(r, 'status_code', 'unknown')}, body={response_text[:500]}",
+                    0,
+                )
+                try:
+                    return_dict = dict_result(response_text)
+                except ValueError as e:
+                    last_parse_error = e
+                    has_next_candidate = submit_index + 1 < len(answer_candidates)
+                    if has_next_candidate and self._should_retry_answer_submit_with_next_format(
+                        problemtype,
+                        response_text,
+                        e,
+                    ):
+                        self.add_message("[DEBUG] 当前答题格式被服务端拒绝，重试备用格式", 0)
+                        continue
+                    meg = "%s自动回答失败，响应解析错误：%s" % (
+                        self.lessonname,
+                        e,
+                    )
+                    self.add_message(meg, 4)
+                    return False
+                if return_dict["code"] == 0:
+                    meg = "%s自动回答成功" % self.lessonname
+                    self.add_message(meg, 4)
+                    # threading.Thread(target=say_something,args=(meg,)).start()
+                    return True
+                else:
+                    meg = "%s自动回答失败，原因：%s" % (
+                        self.lessonname,
+                        return_dict["msg"].replace("_", " "),
+                    )
+                    self.add_message(meg, 4)
+                    # threading.Thread(target=say_something,args=(meg,)).start()
+                    return False
+            if last_parse_error:
+                self.add_message(f"{self.lessonname}自动回答失败，响应解析错误：{last_parse_error}", 4)
                 return False
         else:
             if limit == -1:
@@ -514,16 +533,49 @@ class Lesson:
             self.add_message(meg, 4)
             return False
 
-    def _format_answer_for_submit(self, problemtype, answer):
-        if problemtype == 4 and isinstance(answer, list):
-            return {str(index): value for index, value in enumerate(answer)}
+    def _answer_submit_candidates(self, problemtype, answer):
+        if problemtype in (1, 2):
+            # AI/cache answers use one-based indexes; the API expects option letters.
+            choices = answer if isinstance(answer, list) else [answer]
+            normalized = []
+            for value in choices:
+                if isinstance(value, bool) or not isinstance(value, (int, str)):
+                    raise ValueError(f"无效选择题选项：{value!r}")
+                choice = str(value).strip().strip('\"\'').strip().upper()
+                if choice.isascii() and choice.isdigit():
+                    index = int(choice)
+                    if not 1 <= index <= 26:
+                        raise ValueError(f"选择题选项序号应在1到26之间：{value!r}")
+                    choice = chr(ord("A") + index - 1)
+                if len(choice) != 1 or not "A" <= choice <= "Z":
+                    raise ValueError(f"无效选择题选项：{value!r}")
+                normalized.append(choice)
+            return [normalized]
         if problemtype == 5:
             if isinstance(answer, list):
                 content = "\n".join(str(value).strip('"') for value in answer)
             else:
                 content = str(answer).strip('"')
-            return {"content": content, "pics": [{"pic": "", "thumb": ""}]}
-        return answer
+            return [{"content": content, "pics": [{"pic": "", "thumb": ""}]}]
+        if problemtype == 4 and isinstance(answer, list):
+            return [
+                answer,
+                {str(index): value for index, value in enumerate(answer)},
+            ]
+        return [answer]
+
+    def _should_retry_answer_submit_with_next_format(self, problemtype, response_text, parse_error):
+        if problemtype != 4:
+            return False
+        error_text = f"{response_text} {parse_error}".lower()
+        retry_markers = (
+            "cannot be cast",
+            "jsonarray",
+            "jsonobject",
+            "linkedhashmap",
+            "arraylist",
+        )
+        return any(marker in error_text for marker in retry_markers)
 
     def on_open(self, wsapp):
         self.handshark = {
