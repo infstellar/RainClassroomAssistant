@@ -336,6 +336,11 @@ def get_initial_data(old_config=None):
         "openai_api_base": "https://api.openai.com/v1",
         "openai_model": "gpt-4-vision-preview",
         "ai_analysis_settings": {
+            "protocol": "responses",
+            "stream": True,
+            "reasoning_effort": "high",
+            "reasoning_summary": "auto",
+            "max_output_tokens": None,
             "max_retries": 3,
             "request_timeout": 30,
             "delay_between_requests": 1

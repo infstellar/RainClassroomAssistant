@@ -23,6 +23,11 @@
   "openai_api_base": "https://api.openai.com/v1",
   "openai_model": "gpt-4-vision-preview",
   "ai_analysis_settings": {
+    "protocol": "responses",
+    "stream": true,
+    "reasoning_effort": "high",
+    "reasoning_summary": "auto",
+    "max_output_tokens": null,
     "max_retries": 3,
     "request_timeout": 30,
     "delay_between_requests": 1
@@ -39,7 +44,12 @@
 - `openai_api_base`: API基础URL（支持第三方API）
 - `openai_model`: 使用的AI模型
 - `ai_analysis_settings`: AI分析设置
+  - `protocol`: API协议，默认 `responses`；可设置为 `chat_completions`
+  - `stream`: 默认 `true`，发送流式请求并逐事件读取；设为 `false` 可使用普通 JSON 响应。流式请求的 `request_timeout` 是连接/读取等待时间，不是整个生成过程的总时长。
+  - `reasoning_effort`: Responses API 推理强度，默认 `high`，发送为 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，具体支持范围取决于所用模型和第三方API。此配置不用于 `chat_completions` 协议。参见 [OpenAI 官方推理文档](https://developers.openai.com/api/docs/guides/reasoning)。修改后重启程序生效。
   - `max_retries`: 最大重试次数
+  - `reasoning_summary`: Responses API 推理摘要，默认 `auto`，摘要会独立显示在日志中，不混入答案；设为 `null` 可不请求摘要。具体支持情况取决于模型和第三方API。
+  - `max_output_tokens`: 默认 `null`，不发送应用层输出额度限制，仍受模型、上下文和服务商的额度限制。可设置正整数，例如 `32768`；该额度包含推理与最终答案。`chat_completions` 下映射为 `max_tokens`。不再固定为 900。
   - `request_timeout`: 请求超时时间（秒）
   - `delay_between_requests`: 请求间延迟（秒）
 
@@ -64,6 +74,7 @@
 - **详细初始化信息**：显示启用状态、模型、API基础URL等
 - **错误处理**：清晰的错误信息和处理建议
 - **状态跟踪**：实时显示分析进度和结果
+- **推理与用量**：流式记录推理摘要片段，完成时记录输入、输出、推理 token 数；服务商未返回的字段标记为“未提供”。截断、失败或流中断不会保存为有效答案。以上设置修改后重启程序生效。
 
 ### 日志示例
 

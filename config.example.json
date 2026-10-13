@@ -55,6 +55,10 @@
   "openai_model": "gpt-5.5",
   "ai_analysis_settings": {
     "protocol": "responses",
+    "stream": true,
+    "reasoning_effort": "high",
+    "reasoning_summary": "auto",
+    "max_output_tokens": null,
     "max_retries": 3,
     "request_timeout": 30,
     "delay_between_requests": 1

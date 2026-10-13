@@ -44,6 +44,7 @@ def test_apply_ai_config_overrides():
         "openai_model": "gpt-4-vision-preview",
         "ai_analysis_settings": {
             "max_retries": 3,
+            "reasoning_effort": "high",
             "request_timeout": 30,
             "delay_between_requests": 1,
         },
@@ -55,6 +56,7 @@ def test_apply_ai_config_overrides():
         "openai_model": "gpt-5.4",
         "ai_analysis_settings": {
             "request_timeout": 120,
+            "reasoning_effort": "low",
         },
         "auto_answer": False,
     }
@@ -69,6 +71,7 @@ def test_apply_ai_config_overrides():
     assert merged["openai_model"] == "gpt-5.4"
     assert merged["ai_analysis_settings"]["max_retries"] == 3
     assert merged["ai_analysis_settings"]["request_timeout"] == 120
+    assert merged["ai_analysis_settings"]["reasoning_effort"] == "low"
     assert merged["ai_analysis_settings"]["delay_between_requests"] == 1
 
 
@@ -98,6 +101,19 @@ def test_config_path_defaults_to_project_directory(monkeypatch, tmp_path):
 
     assert Utils.get_config_dir() == str(tmp_path)
     assert Utils.get_config_path() == str(tmp_path / "config.json")
+
+
+def test_ai_stream_settings_survive_config_merge(monkeypatch):
+    monkeypatch.setattr(Utils, "load_ai_config", lambda: ({
+        "ai_analysis_settings": {
+            "stream": False, "reasoning_summary": None, "max_output_tokens": 32768,
+        },
+    }, "ai_config.json"))
+    merged = get_initial_data({"ai_analysis_settings": {"reasoning_effort": "low"}})
+    assert merged["ai_analysis_settings"]["stream"] is False
+    assert merged["ai_analysis_settings"]["reasoning_summary"] is None
+    assert merged["ai_analysis_settings"]["max_output_tokens"] == 32768
+    assert merged["ai_analysis_settings"]["reasoning_effort"] == "low"
 
 
 def test_get_config_path_migrates_existing_appdata_config(monkeypatch, tmp_path):

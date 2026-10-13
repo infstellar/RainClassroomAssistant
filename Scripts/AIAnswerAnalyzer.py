@@ -10,6 +10,8 @@ from PIL import Image
 
 class AIAnswerAnalyzer:
     """AI答案分析器 - 使用OpenAI接口分析PPT图片并缓存答案"""
+
+    INSUFFICIENT_CONTEXT_MARKER = "__INSUFFICIENT_CONTEXT__"
     
     def __init__(self, config: dict, add_message_callback=None):
         """
@@ -33,6 +35,14 @@ class AIAnswerAnalyzer:
         # 分析设置
         ai_settings = config.get('ai_analysis_settings', {})
         self.protocol = ai_settings.get('protocol', 'responses')
+        self.reasoning_effort = ai_settings.get('reasoning_effort', 'high')
+        self.stream = ai_settings.get('stream', True)
+        self.reasoning_summary = ai_settings.get('reasoning_summary', 'auto')
+        self.max_output_tokens = ai_settings.get('max_output_tokens')
+        if self.max_output_tokens is not None and (
+            type(self.max_output_tokens) is not int or self.max_output_tokens <= 0
+        ):
+            raise ValueError("max_output_tokens 必须为正整数或 null")
         self.max_retries = ai_settings.get('max_retries', 3)
         self.request_timeout = ai_settings.get('request_timeout', 120)
         self.delay_between_requests = ai_settings.get('delay_between_requests', 1)
@@ -42,6 +52,11 @@ class AIAnswerAnalyzer:
         if self.enabled:
             self._log(f"AI模型: {self.model}")
             self._log(f"API基础URL: {self.api_base}")
+            self._log(
+                f"协议: {self.protocol}, 流式: {self.stream}, "
+                f"推理强度: {self.reasoning_effort}, 推理摘要: {self.reasoning_summary}, "
+                f"输出上限: {self.max_output_tokens if self.max_output_tokens else '接口默认'}"
+            )
         
         # 初始化OpenAI客户端
         if self.enabled and self.api_key:
@@ -107,6 +122,12 @@ class AIAnswerAnalyzer:
                     elif isinstance(manual_data, list) and len(manual_data) > 0:
                         # 简单格式：如果人工答案非空，则使用人工答案
                         combined_answers[slide_index] = manual_data
+
+                combined_answers = {
+                    slide_index: answer
+                    for slide_index, answer in combined_answers.items()
+                    if not self._is_insufficient_context_answer(answer)
+                }
                 
                 return combined_answers
                 
@@ -296,143 +317,240 @@ class AIAnswerAnalyzer:
         session.trust_env = False
         return session
 
-    def _extract_response_content(self, response) -> str:
-        """从普通JSON或SSE响应中提取文本内容"""
-        def extract_from_chunk(data):
-            if not isinstance(data, dict):
-                return ""
+    def _response_output_text(self, data) -> str:
+        """只提取最终答案文本，推理摘要单独记录。"""
+        if data.get("output_text"):
+            return str(data["output_text"])
+        texts = []
+        for item in data.get("output") or []:
+            if not isinstance(item, dict) or item.get("type") == "reasoning":
+                continue
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("text"):
+                    texts.append(str(part["text"]))
+        if texts:
+            return "".join(texts)
+        choices = data.get("choices") or []
+        if choices and isinstance(choices[0], dict):
+            message = choices[0].get("message") or {}
+            return str(message.get("content") or "")
+        return ""
 
-            output_text = data.get("output_text")
-            if output_text:
-                return str(output_text)
-
-            output_items = data.get("output") or []
-            for output_item in output_items:
-                if not isinstance(output_item, dict):
+    def _log_response_metadata(self, data, log_summary=True):
+        if log_summary:
+            for item in data.get("output") or []:
+                if not isinstance(item, dict) or item.get("type") != "reasoning":
                     continue
-                for content_item in output_item.get("content") or []:
-                    if not isinstance(content_item, dict):
-                        continue
-                    text = content_item.get("text")
-                    if text:
-                        return str(text)
+                for part in item.get("summary") or []:
+                    if isinstance(part, dict) and part.get("text"):
+                        self._log(f"推理摘要: {part['text']}")
+        usage = data.get("usage") or {}
+        if usage:
+            details = usage.get("output_tokens_details") or {}
+            reasoning_tokens = details.get("reasoning_tokens", "未提供")
+            self._log(
+                f"Token用量: input={usage.get('input_tokens', usage.get('prompt_tokens', '未提供'))}, "
+                f"output={usage.get('output_tokens', usage.get('completion_tokens', '未提供'))}, "
+                f"reasoning={reasoning_tokens}"
+            )
+        status = data.get("status")
+        if data.get("error") or status in ("incomplete", "failed", "cancelled"):
+            detail = data.get("error") or data.get("incomplete_details") or status
+            raise ValueError(f"AI响应未完成: status={status}, detail={detail}")
 
-            delta = data.get("delta")
-            if data.get("type") == "response.output_text.delta" and delta:
-                return str(delta)
+    def _iter_sse_data(self, lines):
+        """按SSE事件边界读取，兼容注释、多行data和末尾无空行。"""
+        parts = []
+        for raw_line in lines:
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            line = line.rstrip("\r\n")
+            if not line:
+                if parts:
+                    yield "\n".join(parts)
+                    parts = []
+            elif line.startswith("data:"):
+                parts.append(line[5:].lstrip(" "))
+        if parts:
+            yield "\n".join(parts)
 
-            choices = data.get("choices") or []
-            if not choices:
-                return ""
+    def _extract_sse_content(self, lines) -> str:
+        parts = []
+        final_text = None
+        summary_streamed = False
+        terminal = False
+        responses_events = False
+        for payload in self._iter_sse_data(lines):
+            if payload == "[DONE]":
+                terminal = True
+                break
+            data = json.loads(payload)
+            if not isinstance(data, dict):
+                raise ValueError("AI流式事件不是JSON对象")
+            event_type = data.get("type", "")
+            responses_events = responses_events or event_type.startswith("response.")
+            if event_type == "error" or data.get("error"):
+                raise ValueError(f"AI流式错误: {data.get('error') or data}")
+            if event_type in ("response.completed", "response.incomplete", "response.failed"):
+                final = data.get("response") or {}
+                self._log_response_metadata(final, log_summary=not summary_streamed)
+                if event_type != "response.completed":
+                    raise ValueError(f"AI流式响应未完成: {event_type}")
+                final_text = self._response_output_text(final) or final_text
+                terminal = True
+                break
+            if event_type == "response.output_text.delta":
+                parts.append(str(data.get("delta") or ""))
+            elif event_type == "response.output_text.done" and not parts:
+                final_text = str(data.get("text") or "")
+            elif event_type == "response.reasoning_summary_text.delta":
+                delta = data.get("delta")
+                if delta:
+                    self._log(f"推理摘要片段: {delta}")
+                    summary_streamed = True
+            elif event_type == "response.reasoning_summary_text.done" and not summary_streamed:
+                if data.get("text"):
+                    self._log(f"推理摘要: {data['text']}")
+                    summary_streamed = True
+            else:
+                choices = data.get("choices") or []
+                if choices and isinstance(choices[0], dict):
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    if delta.get("content"):
+                        parts.append(str(delta["content"]))
+                    if choice.get("finish_reason") in ("length", "content_filter"):
+                        raise ValueError(f"AI答案被截断: {choice['finish_reason']}")
+                if data.get("usage"):
+                    self._log_response_metadata(data)
+        if not terminal and responses_events:
+            raise requests.exceptions.ConnectionError("Responses流中断，未收到完成事件")
+        if not terminal:
+            raise requests.exceptions.ConnectionError("SSE流中断，未收到结束标记")
+        return (final_text if final_text is not None else "".join(parts)).strip()
 
-            choice = choices[0]
-            if not isinstance(choice, dict):
-                return ""
-
-            message = choice.get("message") or {}
-            if isinstance(message, dict):
-                content = message.get("content")
-                if content:
-                    return str(content)
-
-            delta = choice.get("delta") or {}
-            if isinstance(delta, dict):
-                content = delta.get("content")
-                if content:
-                    return str(content)
-
-            return ""
-
+    def _extract_response_content(self, response) -> str:
+        """在会话仍打开时逐事件读取SSE，也兼容网关返回普通JSON。"""
+        content_type = (getattr(response, "headers", {}) or {}).get("Content-Type", "")
+        if "text/event-stream" in content_type.lower():
+            self._log("开始读取AI流式响应")
+            # 不访问response.text/json，避免预先缓冲整个响应。
+            if hasattr(response, "iter_lines"):
+                return self._extract_sse_content(response.iter_lines(chunk_size=1))
+            return self._extract_sse_content(response.text.splitlines())
         try:
             data = response.json()
-            content = extract_from_chunk(data)
-            if content:
-                return content.strip()
-        except Exception:
-            pass
+        except ValueError:
+            text = getattr(response, "text", "") or ""
+            if any(line.startswith("data:") for line in text.splitlines()):
+                return self._extract_sse_content(text.splitlines())
+            return text.strip()
+        if not isinstance(data, dict):
+            raise ValueError("AI响应不是JSON对象")
+        self._log_response_metadata(data)
+        choices = data.get("choices") or []
+        if choices and choices[0].get("finish_reason") in ("length", "content_filter"):
+            raise ValueError(f"AI答案被截断: {choices[0]['finish_reason']}")
+        return self._response_output_text(data).strip()
 
-        response_text = getattr(response, "text", "") or ""
-        if not response_text:
-            return ""
+    def _single_image_prompt(self):
+        return (
+            "请分析这张PPT图片中的题目，如果有选择题、填空题或其他题目，请提供正确答案。"
+            "如果是选择题，请返回正确选项的序号（如[1,2]表示A、B选项正确）。"
+            "如果没有题目，请返回空列表[]。"
+            "如果看到了题目，但当前图片缺少必要上下文、定义、数据或前置条件，无法可靠作答，请只返回[\"上下文不足\"]。"
+            "输出最简洁的内容，只输出答案，如果题目是英文，就用英文输出；题目是中文就用中文输出。"
+            "不要输出任何过程，不要使用 latex 和 markdown 语法。只返回答案数组，不要其他解释。"
+        )
 
-        has_sse_data = False
-        parts = []
-        for raw_line in response_text.splitlines():
-            line = raw_line.strip()
-            if not line.startswith("data:"):
-                continue
-
-            has_sse_data = True
-            payload = line[5:].strip()
-            if not payload or payload == "[DONE]":
-                continue
-
-            try:
-                data = json.loads(payload)
-            except Exception:
-                continue
-
-            content = extract_from_chunk(data)
-            if content:
-                parts.append(content)
-
-        if parts:
-            return "".join(parts).strip()
-
-        if has_sse_data:
-            return ""
-
-        return response_text.strip()
+    def _context_prompt(self, target_slide_index: int):
+        return (
+            f"请根据多张PPT图片回答最后一张图片中的题目。最后一张图片是当前要回答的题目页，slide={target_slide_index}；"
+            "前面的图片只用于补充上下文、定义、数据、假设和符号说明。"
+            "如果是选择题，请返回正确选项的序号（如[1,2]表示A、B选项正确）。"
+            "如果仍然缺少必要上下文，无法可靠作答，请只返回[\"上下文不足\"]。"
+            "如果最后一张图片没有题目，请返回空列表[]。"
+            "输出最简洁的内容，只输出答案，如果题目是英文，就用英文输出；题目是中文就用中文输出。"
+            "不要输出任何过程，不要使用 latex 和 markdown 语法。只返回答案数组，不要其他解释。"
+        )
 
     def _build_ai_request(self, api_base: str, model: str, base64_image: str):
-        prompt = "请分析这张PPT图片中的题目，如果有选择题、填空题或其他题目，请提供正确答案。如果是选择题，请返回正确选项的序号（如[1,2]表示A、B选项正确）。如果没有题目，请返回空列表[]。输出最简洁的内容，只输出答案，如果题目是英文，就用英文输出；题目是中文就用中文输出。不要输出任何过程，不要使用 latex 和 markdown 语法。只返回答案数组，不要其他解释。"
+        return self._build_ai_request_for_images(
+            api_base,
+            model,
+            [base64_image],
+            self._single_image_prompt(),
+        )
+
+    def _build_ai_request_for_images(
+        self,
+        api_base: str,
+        model: str,
+        base64_images: List[str],
+        prompt: str,
+    ):
+        if not base64_images:
+            raise ValueError("至少需要一张图片")
 
         if self.protocol == "chat_completions":
+            content = [
+                {
+                    "type": "text",
+                    "text": prompt
+                }
+            ]
+            for base64_image in base64_images:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    }
+                )
             payload = {
                 "model": model,
                 "messages": [
                     {
                         "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": prompt
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
+                        "content": content
                     }
                 ],
-                "max_tokens": 900
+                "stream": self.stream
             }
+            if self.max_output_tokens is not None:
+                payload["max_tokens"] = self.max_output_tokens
             return f"{api_base.rstrip('/')}/chat/completions", payload
 
+        content = [
+            {
+                "type": "input_text",
+                "text": prompt
+            }
+        ]
+        for base64_image in base64_images:
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{base64_image}"
+                }
+            )
         payload = {
             "model": model,
             "reasoning": {
-                "effort": "high"
+                "effort": self.reasoning_effort
             },
             "input": [
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "input_image",
-                            "image_url": f"data:image/jpeg;base64,{base64_image}"
-                        }
-                    ]
+                    "content": content
                 }
             ],
-            "max_output_tokens": 900
+            "stream": self.stream
         }
+        if self.reasoning_summary:
+            payload["reasoning"]["summary"] = self.reasoning_summary
+        if self.max_output_tokens is not None:
+            payload["max_output_tokens"] = self.max_output_tokens
         return f"{api_base.rstrip('/')}/responses", payload
 
     def _parse_answer_array(self, content: str) -> List:
@@ -458,8 +576,158 @@ class AIAnswerAnalyzer:
                 answers.append(item.upper())
             else:
                 answers.append(item)
+        normalized_answers = [
+            str(answer).strip().strip('"').strip("'")
+            for answer in answers
+        ]
+        if len(normalized_answers) == 1 and normalized_answers[0] in (
+            "上下文不足",
+            "context insufficient",
+            "insufficient context",
+            "INSUFFICIENT_CONTEXT",
+        ):
+            return self.INSUFFICIENT_CONTEXT_MARKER
         return answers
-            
+
+    def _is_insufficient_context_answer(self, answer) -> bool:
+        return answer == self.INSUFFICIENT_CONTEXT_MARKER
+
+    def _slide_identifiers(self, slide: dict) -> set:
+        return {
+            str(identifier)
+            for identifier in (
+                slide.get("index"),
+                slide.get("id"),
+                slide.get("slideId"),
+            )
+            if identifier is not None
+        }
+
+    def _select_context_slides(self, slides_data: List[dict], matched_slide: dict, total_images: int) -> List[dict]:
+        if not slides_data or not matched_slide or total_images <= 1:
+            return [matched_slide] if matched_slide else []
+
+        target_identifiers = self._slide_identifiers(matched_slide)
+        matched_position = None
+        for position, slide in enumerate(slides_data):
+            if slide is matched_slide or target_identifiers.intersection(self._slide_identifiers(slide)):
+                matched_position = position
+                break
+
+        if matched_position is None:
+            return [matched_slide]
+
+        previous_count = max(total_images - 1, 0)
+        start_position = max(0, matched_position - previous_count)
+        return slides_data[start_position:matched_position + 1]
+
+    def _prepare_batch_context_images(self, context_slides: List[dict], img_cache_path: str, target_slide_index: int):
+        image_paths = []
+        selected_indexes = []
+        target_image_exists = False
+
+        for slide in context_slides:
+            slide_index = slide.get("index")
+            if slide_index is None:
+                self._log("批量上下文图片跳过: slide 缺少 index")
+                continue
+
+            image_path = os.path.join(img_cache_path, f"{slide_index}.jpg")
+            selected_indexes.append(slide_index)
+            if not os.path.exists(image_path):
+                self._log(f"批量上下文图片不存在，跳过: slide={slide_index}, path={image_path}")
+                continue
+
+            if slide_index == target_slide_index:
+                target_image_exists = True
+            image_paths.append(image_path)
+
+        if not target_image_exists:
+            self._log(f"批量上下文目标图片不存在，无法重试: slide={target_slide_index}")
+            return [], selected_indexes
+
+        return image_paths, selected_indexes
+
+    def _retry_batch_with_context(self, slides_data: List[dict], matched_slide: dict, img_cache_path: str):
+        slide_index = matched_slide.get("index")
+        if slide_index is None:
+            self._log("批量上下文重试失败: 当前题页缺少 index")
+            return None
+
+        for retry_index, total_images in enumerate((3, 5, 7, 9), start=1):
+            context_slides = self._select_context_slides(slides_data, matched_slide, total_images)
+            image_paths, selected_indexes = self._prepare_batch_context_images(
+                context_slides,
+                img_cache_path,
+                slide_index,
+            )
+            self._log(
+                f"批量上下文重试 {retry_index}/4: "
+                f"images={len(image_paths)}/{total_images}, "
+                f"slides={selected_indexes}, target={slide_index}"
+            )
+            if not image_paths:
+                continue
+
+            ai_answers = self.analyze_slide_with_context(image_paths, slide_index)
+            self._log(f"批量上下文分析返回: {ai_answers}")
+
+            if ai_answers and not self._is_insufficient_context_answer(ai_answers):
+                self._log(f"批量上下文重试 {retry_index}/4 成功，答案: {ai_answers}")
+                return ai_answers
+            if self._is_insufficient_context_answer(ai_answers):
+                self._log(f"批量上下文重试 {retry_index}/4 仍上下文不足")
+                continue
+            if ai_answers == []:
+                self._log(f"批量上下文重试 {retry_index}/4 未识别到可用答案")
+                return []
+
+            self._log(f"批量上下文重试 {retry_index}/4 分析失败")
+            return None
+
+        self._log(f"批量上下文不足已耗尽: slide={slide_index}")
+        return self.INSUFFICIENT_CONTEXT_MARKER
+
+    def _post_ai_request(self, request_url, headers, payload):
+        self._log(
+            f"发送AI请求: protocol={self.protocol}, stream={payload.get('stream', False)}, "
+            f"reasoning={payload.get('reasoning')}, "
+            f"max_output_tokens={payload.get('max_output_tokens', payload.get('max_tokens', '接口默认'))}"
+        )
+        for attempt in range(self.max_retries + 1):
+            session = self._create_request_session()
+            response = None
+            try:
+                response = session.post(
+                    request_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.request_timeout,
+                    stream=bool(payload.get("stream")),
+                )
+                if response.status_code != 200:
+                    self._log(f"OpenAI API请求失败: {response.status_code} - {response.text}")
+                    return None
+                content = self._extract_response_content(response)
+                if not content:
+                    self._log("OpenAI API返回空内容")
+                    return []
+                return self._parse_answer_array(content)
+            except (
+                requests.exceptions.SSLError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ) as e:
+                if attempt >= self.max_retries:
+                    raise
+                self._log(f"OpenAI API请求失败，准备重试 {attempt + 1}/{self.max_retries}: {e}")
+            finally:
+                if response is not None and hasattr(response, "close"):
+                    response.close()
+                session.close()
+            time.sleep(min(2 ** attempt, 5))
+
     def analyze_slide_with_openai(self, image_path: str, slide_index: int) -> Optional[List]:
         """使用OpenAI分析单张幻灯片"""
         try:
@@ -482,50 +750,38 @@ class AIAnswerAnalyzer:
             }
             
             request_url, payload = self._build_ai_request(api_base, model, base64_image)
-            response = None
-            last_error = None
+            return self._post_ai_request(request_url, headers, payload)
 
-            for attempt in range(self.max_retries + 1):
-                session = self._create_request_session()
-                try:
-                    response = session.post(
-                        request_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=self.request_timeout,
-                    )
-                    break
-                except (
-                    requests.exceptions.SSLError,
-                    requests.exceptions.Timeout,
-                    requests.exceptions.ConnectionError,
-                ) as e:
-                    last_error = e
-                    if attempt >= self.max_retries:
-                        raise
-                    self._log(f"OpenAI API请求失败，准备重试 {attempt + 1}/{self.max_retries}: {e}")
-                    time.sleep(min(2 ** attempt, 5))
-                finally:
-                    session.close()
-
-            if response is None:
-                if last_error:
-                    raise last_error
-                return None
-
-            if response.status_code != 200:
-                self._log(f"OpenAI API请求失败: {response.status_code} - {response.text}")
-                return None
-
-            content = self._extract_response_content(response)
-            if not content:
-                self._log("OpenAI API返回空内容")
-                return []
-
-            return self._parse_answer_array(content)
-                
         except Exception as e:
             self._log(f"分析幻灯片失败 {image_path}: {e}")
+            return None
+
+    def analyze_slide_with_context(self, image_paths: List[str], slide_index: int) -> Optional[List]:
+        """使用OpenAI结合上下文图片分析目标幻灯片"""
+        try:
+            api_key = self.config.get('openai_api_key', '')
+            api_base = self.config.get('openai_api_base', 'https://api.openai.com/v1')
+            model = self.config.get('openai_model', 'gpt-4-vision-preview')
+
+            if not api_key:
+                self._log("OpenAI API密钥未配置")
+                return None
+
+            base64_images = [self.encode_image_to_base64(image_path) for image_path in image_paths]
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+            request_url, payload = self._build_ai_request_for_images(
+                api_base,
+                model,
+                base64_images,
+                self._context_prompt(slide_index),
+            )
+            return self._post_ai_request(request_url, headers, payload)
+
+        except Exception as e:
+            self._log(f"结合上下文分析幻灯片失败 {image_paths}: {e}")
             return None
             
     def analyze_presentation(self, lesson_name: str, presentation_title: str, 
@@ -562,9 +818,16 @@ class AIAnswerAnalyzer:
                     self._log(f"正在分析幻灯片 {slide_index}...")
                     ai_answers = self.analyze_slide_with_openai(image_path, slide_index)
                     
-                    if ai_answers:
+                    if self._is_insufficient_context_answer(ai_answers):
+                        self._log(f"幻灯片 {slide_index} 上下文不足，准备批量上下文重试")
+                        ai_answers = self._retry_batch_with_context(slides_data, slide, img_cache_path)
+
+                    if ai_answers and not self._is_insufficient_context_answer(ai_answers):
                         answers_cache[str(slide_index)] = ai_answers
                         self._log(f"幻灯片 {slide_index} 分析完成，答案: {ai_answers}")
+                    elif self._is_insufficient_context_answer(ai_answers):
+                        self._log(f"幻灯片 {slide_index} 上下文不足，未缓存为答案")
+                        failed_slides.append(slide)
                     elif ai_answers == []:
                         self._log(f"幻灯片 {slide_index} 未识别到可用答案")
                         failed_slides.append(slide)
