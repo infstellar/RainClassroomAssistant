@@ -1,0 +1,20 @@
+schema: spec-driven
+
+context: |
+  项目是雨课堂助手，主要使用 Python。
+  OpenSpec 文档正文使用中文书写；仅保留校验器需要的英文结构关键字，例如 ADDED Requirements、Requirement、Scenario。
+
+rules:
+  proposal:
+    - 正文必须使用中文。
+    - 必须包含“为什么”、“改动内容”、“非目标”和“风险”。
+  design:
+    - 每个变更必须提供 design.md。
+    - 正文必须使用中文。
+    - 必须覆盖数据流、接口/方法边界、错误处理、日志和测试策略。
+  tasks:
+    - 正文必须使用中文。
+    - 任务应写成可勾选清单。
+  spec:
+    - 正文必须使用中文。
+    - 保留 OpenSpec 校验器需要的英文结构关键字。
