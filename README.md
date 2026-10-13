@@ -27,9 +27,11 @@
 
 ### LLM回答功能
 
-- 参数配置：重命名ai_config_example.json为ai_config.json，然后填写参数。完整主配置示例见 `config.example.json`。
+- 参数配置：可直接在项目目录下的 `config.json` 中填写 AI 参数，完整主配置示例见 `config.example.json`。也可复制 `ai_config_example.json` 为 `ai_config.json`，单独维护 AI 参数。
 
-> 程序启动时会自动将 `ai_config.json` 中的 AI 配置同步到项目目录下的 `config.json`，修改后重启程序即可生效。
+> `ai_config.json` 是可选的 AI 配置覆盖文件，仍会被程序读取。程序启动时，其 AI 配置会覆盖 `config.json` 中的对应字段，并同步回 `config.json`；`ai_analysis_settings` 会递归合并，未指定的设置会保留。修改后重启程序即可生效。
+>
+> 如果 AI 参数已经完整保存在 `config.json` 中，可以删除 `ai_config.json`，之后只维护 `config.json`。若保留 `ai_config.json`，只修改 `config.json` 中的同名 AI 参数，重新加载配置时可能会被覆盖。程序还会查找 `%APPDATA%/RainClassroomAssistant/ai_config.json` 和当前工作目录下的同名文件；如需完全停用此覆盖机制，也需确认这些位置没有该文件。
 
 1. PPT下载完之后，会提取PPT的所有问题；
 2. Scripts\AIAnswerAnalyzer.py 会拿着问题PPT发给AI；
