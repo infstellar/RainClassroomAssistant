@@ -1,6 +1,5 @@
 import hashlib
 import os
-import re
 import threading
 import time
 import asyncio
@@ -13,6 +12,7 @@ from fpdf import FPDF
 from PIL import Image, ImageDraw, ImageFont
 
 from .AsyncDownloader import AsyncImageDownloader
+from .PathUtils import normalize_path_component
 
 
 class PPTManager:
@@ -20,8 +20,8 @@ class PPTManager:
     title_dict = {}
 
     def __init__(self, data, lessonname, downloadpath="downloads"):
-        self.lessonname = self.validateTitle(lessonname)
-        self.title = self.validateTitle(data["title"]).strip()
+        self.lessonname = normalize_path_component(lessonname, "未知课程")
+        self.title = self.validateTitle(data["title"])
         # 安全设置title_dict，避免并发问题
         if self.title not in self.title_dict:
             self.title_dict[self.title] = 1
@@ -67,9 +67,7 @@ class PPTManager:
         self.check_dir()
 
     def validateTitle(self, title):
-        rstr = r"[\/\\\:\*\?\"\<\>\|]"  # '/ \ : * ? " < > |'
-        new_title = re.sub(rstr, "_", title)  # 替换为下划线
-        return new_title
+        return normalize_path_component(title)
 
     def check_dir(self):
         if not os.path.exists(self.downloadpath):

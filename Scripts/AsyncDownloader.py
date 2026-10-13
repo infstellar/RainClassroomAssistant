@@ -13,6 +13,11 @@ from typing import List, Dict, Optional, Callable, Any
 from PIL import Image
 import time
 
+if __package__:
+    from .PathUtils import normalize_path_component
+else:
+    from PathUtils import normalize_path_component
+
 try:
     from loguru import logger
 except ImportError:
@@ -383,8 +388,8 @@ class AsyncPPTDownloadManager:
         import os
         
         # 创建下载目录 - 使用与PPTManager相同的路径结构
-        title = data.get("title", "未知演示文稿").replace("/", "_").strip()
-        lessonname = lessonname.replace("/", "_").strip()
+        title = normalize_path_component(data.get("title", "未知演示文稿"))
+        lessonname = normalize_path_component(lessonname, "未知课程")
         
         # 使用正确的rainclasscache路径结构
         cachedirpath = os.path.join("downloads", "rainclasscache")
