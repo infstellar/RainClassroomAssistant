@@ -1,5 +1,7 @@
 import json
+import os
 import random
+import re
 import threading
 import time
 import traceback
@@ -367,6 +369,7 @@ class Lesson:
     def get_problems(self, presentationid):
         # 获取课程ppt中的题目
         data = self._get_ppt(presentationid)
+        presentation_title = data.get("title", "未知演示文稿").replace("/", "_").strip()
         slides = [
             problem
             for problem in self._apply_problem_display_indexes(data["slides"])
@@ -383,8 +386,336 @@ class Lesson:
             if slide_ids:
                 problems[i]["slideId"] = slide_ids[0]
                 problems[i]["slideIds"] = slide_ids
+            problems[i]["presentationId"] = presentationid
+            problems[i]["presentationTitle"] = presentation_title
+            if slides[i].get("cover"):
+                problems[i]["cover"] = slides[i]["cover"]
             
         return problems
+
+    def _problem_matches_identifier(self, problem, problemid):
+        identifiers = (
+            problem.get("problemId"),
+            problem.get("id"),
+            problem.get("sid"),
+            problem.get("slideId"),
+            *(problem.get("slideIds", []) or []),
+        )
+        return str(problemid) in [str(identifier) for identifier in identifiers if identifier]
+
+    def _find_problem_for_live_ai(self, problemid):
+        self.add_message(f"[现场AI兜底] 开始查找问题: problemid={problemid}", 0)
+        for problem in self.problems_ls:
+            if self._problem_matches_identifier(problem, problemid):
+                self.add_message(
+                    "[现场AI兜底] 找到问题: "
+                    f"problemId={problem.get('problemId')}, "
+                    f"index={problem.get('index')}, "
+                    f"presentationId={problem.get('presentationId')}, "
+                    f"cover={'有' if problem.get('cover') else '无'}",
+                    0,
+                )
+                return problem
+        self.add_message(f"[现场AI兜底] 未在 problems_ls 中找到问题: {problemid}", 0)
+        return None
+
+    def _candidate_presentation_ids(self, current_problem):
+        presentation_ids = []
+        for presentation_id in (
+            current_problem.get("presentationId") if current_problem else None,
+            getattr(self, "_current_presentation_id", None),
+            *list(getattr(self, "downloaded_presentations", set()) or set()),
+            *list(getattr(self, "downloading_presentations", set()) or set()),
+        ):
+            if presentation_id and presentation_id not in presentation_ids:
+                presentation_ids.append(presentation_id)
+        self.add_message(f"[现场AI兜底] 候选PPT ID: {presentation_ids}", 0)
+        return presentation_ids
+
+    def _find_slide_in_presentation(self, ppt_data, current_problem):
+        if not ppt_data or not current_problem:
+            return None
+
+        target_index = current_problem.get("index")
+        problem_identifiers = [
+            str(identifier)
+            for identifier in (
+                current_problem.get("problemId"),
+                current_problem.get("id"),
+                current_problem.get("sid"),
+                current_problem.get("slideId"),
+                *(current_problem.get("slideIds", []) or []),
+            )
+            if identifier
+        ]
+
+        slides = self._apply_problem_display_indexes(ppt_data.get("slides", []))
+        for slide in slides:
+            slide_problem = slide.get("problem", {})
+            slide_identifiers = [
+                str(identifier)
+                for identifier in (
+                    slide_problem.get("problemId"),
+                    slide_problem.get("id"),
+                    slide_problem.get("sid"),
+                    slide.get("id"),
+                    slide.get("slideId"),
+                )
+                if identifier
+            ]
+            if set(problem_identifiers).intersection(slide_identifiers):
+                return slide
+            if target_index is not None and str(slide.get("index")) == str(target_index):
+                return slide
+        return None
+
+    def _download_live_ai_image(self, cover_url, image_path):
+        self.add_message(f"[现场AI兜底] 准备下载题目图片: {cover_url}", 0)
+        os.makedirs(os.path.dirname(image_path), exist_ok=True)
+        response = requests.get(
+            cover_url,
+            headers=getattr(self, "headers", None),
+            proxies={"http": None, "https": None},
+            timeout=30,
+        )
+        status_code = getattr(response, "status_code", "unknown")
+        content_type = getattr(response, "headers", {}).get("content-type", "")
+        content = getattr(response, "content", b"") or b""
+        self.add_message(
+            f"[现场AI兜底] 图片下载响应: status={status_code}, "
+            f"content-type={content_type}, bytes={len(content)}",
+            0,
+        )
+        if status_code != 200:
+            self.add_message(f"[现场AI兜底] 图片下载失败: HTTP {status_code}", 2)
+            return False
+        if len(content) < 10:
+            self.add_message("[现场AI兜底] 图片下载失败: 文件内容过小", 2)
+            return False
+        if content_type and not content_type.lower().startswith("image/"):
+            self.add_message(f"[现场AI兜底] 图片下载失败: 非图片响应 {content_type}", 2)
+            return False
+
+        with open(image_path, "wb") as image_file:
+            image_file.write(content)
+        self.add_message(f"[现场AI兜底] 题目图片已保存: {image_path}", 0)
+        return True
+
+    def _cache_live_ai_answer(self, presentation_title, slide_index, ai_answer, slide_info):
+        self.add_message(
+            f"[现场AI兜底] 写入AI答案缓存: title={presentation_title}, "
+            f"slide={slide_index}, answer={ai_answer}",
+            0,
+        )
+        self.ai_analyzer.save_cached_answers(
+            self.lessonname,
+            presentation_title,
+            {str(slide_index): ai_answer},
+            [slide_info] if slide_info else None,
+            "completed",
+        )
+
+    def _safe_live_ai_path_name(self, filename):
+        return re.sub(r'[<>:"/\\|?*]', "_", str(filename))
+
+    def _is_live_ai_insufficient_context(self, ai_answer):
+        return (
+            ai_answer
+            == getattr(self.ai_analyzer, "INSUFFICIENT_CONTEXT_MARKER", "__INSUFFICIENT_CONTEXT__")
+        )
+
+    def _select_live_ai_context_slides(self, slides, matched_slide, total_images):
+        if not slides or not matched_slide or total_images <= 1:
+            return [matched_slide] if matched_slide else []
+
+        target_identifiers = {
+            str(identifier)
+            for identifier in (
+                matched_slide.get("index"),
+                matched_slide.get("id"),
+                matched_slide.get("slideId"),
+            )
+            if identifier is not None
+        }
+        matched_position = None
+        for position, slide in enumerate(slides):
+            slide_identifiers = {
+                str(identifier)
+                for identifier in (
+                    slide.get("index"),
+                    slide.get("id"),
+                    slide.get("slideId"),
+                )
+                if identifier is not None
+            }
+            if slide is matched_slide or target_identifiers.intersection(slide_identifiers):
+                matched_position = position
+                break
+
+        if matched_position is None:
+            return [matched_slide]
+
+        previous_count = max(total_images - 1, 0)
+        start_position = max(0, matched_position - previous_count)
+        return slides[start_position:matched_position + 1]
+
+    def _prepare_live_ai_context_images(self, context_slides, image_dir):
+        image_paths = []
+        selected_indexes = []
+        for slide in context_slides:
+            slide_index = slide.get("index")
+            cover_url = slide.get("cover")
+            if slide_index is None:
+                self.add_message("[现场AI兜底] 上下文图片跳过: slide 缺少 index", 2)
+                return None, selected_indexes
+            if not cover_url:
+                self.add_message(f"[现场AI兜底] 上下文图片跳过: slide={slide_index} 缺少 cover", 2)
+                return None, selected_indexes
+
+            image_path = os.path.join(image_dir, f"{slide_index}.jpg")
+            selected_indexes.append(slide_index)
+            if os.path.exists(image_path):
+                self.add_message(f"[现场AI兜底] 上下文图片复用缓存: slide={slide_index}, path={image_path}", 0)
+            else:
+                self.add_message(f"[现场AI兜底] 上下文图片需要下载: slide={slide_index}", 0)
+                if not self._download_live_ai_image(cover_url, image_path):
+                    return None, selected_indexes
+            image_paths.append(image_path)
+        return image_paths, selected_indexes
+
+    def _retry_live_ai_with_context(self, matched_slides, matched_slide, image_dir, slide_index):
+        if not matched_slides or not matched_slide:
+            self.add_message("[现场AI兜底] 无 matched PPT 上下文，无法扩展重试", 2)
+            return None
+
+        for retry_index, total_images in enumerate((3, 5, 7, 9), start=1):
+            context_slides = self._select_live_ai_context_slides(
+                matched_slides,
+                matched_slide,
+                total_images,
+            )
+            image_paths, selected_indexes = self._prepare_live_ai_context_images(context_slides, image_dir)
+            self.add_message(
+                f"[现场AI兜底] 上下文重试 {retry_index}/4: "
+                f"images={len(image_paths) if image_paths else 0}/{total_images}, "
+                f"slides={selected_indexes}, target={slide_index}",
+                0,
+            )
+            if not image_paths:
+                continue
+
+            ai_answer = self.ai_analyzer.analyze_slide_with_context(image_paths, slide_index)
+            self.add_message(f"[现场AI兜底] AI上下文分析返回: {ai_answer}", 0)
+            if ai_answer and not self._is_live_ai_insufficient_context(ai_answer):
+                return ai_answer
+            if self._is_live_ai_insufficient_context(ai_answer):
+                self.add_message(f"[现场AI兜底] 上下文重试 {retry_index}/4 仍上下文不足", 2)
+                continue
+            if ai_answer == []:
+                self.add_message(f"[现场AI兜底] 上下文重试 {retry_index}/4 未识别到可用答案", 2)
+                return []
+            self.add_message(f"[现场AI兜底] 上下文重试 {retry_index}/4 分析失败", 2)
+            return None
+
+        self.add_message("[现场AI兜底] 上下文不足已耗尽，停止现场AI兜底", 2)
+        return None
+
+    def _try_live_ai_answer(self, problemid):
+        current_problem = self._find_problem_for_live_ai(problemid)
+        if not current_problem:
+            return None
+
+        slide_index = current_problem.get("index")
+        if slide_index is None:
+            self.add_message("[现场AI兜底] 当前问题缺少幻灯片 index，无法分析", 2)
+            return None
+
+        presentation_title = current_problem.get("presentationTitle") or "现场题目"
+        cover_url = current_problem.get("cover")
+        matched_slide = None
+        matched_slides = []
+
+        self.add_message(
+            f"[现场AI兜底] 当前问题基础信息: slide={slide_index}, "
+            f"title={presentation_title}, cover={'有' if cover_url else '无'}",
+            0,
+        )
+
+        cached_answers = self.ai_analyzer.load_cached_answers(self.lessonname, presentation_title)
+        if cached_answers and str(slide_index) in cached_answers and cached_answers[str(slide_index)]:
+            ai_answer = cached_answers[str(slide_index)]
+            self.add_message(f"[现场AI兜底] 命中当前题缓存: {ai_answer}", 0)
+            return ai_answer
+        self.add_message("[现场AI兜底] 当前题缓存未命中，准备现场下载图片分析", 0)
+
+        for presentation_id in self._candidate_presentation_ids(current_problem):
+            try:
+                self.add_message(f"[现场AI兜底] 拉取PPT数据以补全题图: {presentation_id}", 0)
+                ppt_data = self._get_ppt(presentation_id)
+                fetched_title = ppt_data.get("title", presentation_title).replace("/", "_").strip()
+                candidate_slide = self._find_slide_in_presentation(ppt_data, current_problem)
+                if not candidate_slide:
+                    self.add_message(f"[现场AI兜底] PPT {presentation_id} 中未匹配到当前题", 0)
+                    continue
+
+                matched_slide = candidate_slide
+                matched_slides = self._apply_problem_display_indexes(ppt_data.get("slides", []))
+                presentation_title = fetched_title
+                slide_index = matched_slide.get("index", slide_index)
+                cover_url = cover_url or matched_slide.get("cover")
+                self.add_message(
+                    f"[现场AI兜底] 已匹配PPT题页: presentation={presentation_id}, "
+                    f"title={presentation_title}, slide={slide_index}, "
+                    f"cover={'有' if cover_url else '无'}",
+                    0,
+                )
+
+                cached_answers = self.ai_analyzer.load_cached_answers(self.lessonname, presentation_title)
+                if cached_answers and str(slide_index) in cached_answers and cached_answers[str(slide_index)]:
+                    ai_answer = cached_answers[str(slide_index)]
+                    self.add_message(f"[现场AI兜底] 匹配PPT后命中缓存: {ai_answer}", 0)
+                    return ai_answer
+                break
+            except Exception as e:
+                self.add_message(f"[现场AI兜底] 拉取或匹配PPT失败: {presentation_id}, error={e}", 2)
+
+        if not cover_url:
+            self.add_message("[现场AI兜底] 没有可下载的题目图片URL，无法现场分析", 2)
+            return None
+
+        safe_title = self._safe_live_ai_path_name(presentation_title)
+        image_dir = os.path.join(self.ai_analyzer.cache_dir, "_live_images", safe_title)
+        image_path = os.path.join(image_dir, f"{slide_index}.jpg")
+        if not self._download_live_ai_image(cover_url, image_path):
+            return None
+
+        self.add_message(f"[现场AI兜底] 开始调用AI分析现场图片: {image_path}", 0)
+        ai_answer = self.ai_analyzer.analyze_slide_with_openai(image_path, slide_index)
+        self.add_message(f"[现场AI兜底] AI现场分析返回: {ai_answer}", 0)
+
+        if self._is_live_ai_insufficient_context(ai_answer):
+            self.add_message("[现场AI兜底] AI报告上下文不足，准备扩展PPT上下文重试", 2)
+            ai_answer = self._retry_live_ai_with_context(
+                matched_slides,
+                matched_slide,
+                image_dir,
+                slide_index,
+            )
+            self.add_message(f"[现场AI兜底] AI上下文重试最终返回: {ai_answer}", 0)
+
+        if ai_answer and not self._is_live_ai_insufficient_context(ai_answer):
+            slide_info = matched_slide or {
+                "index": slide_index,
+                "cover": cover_url,
+                "problem": current_problem,
+            }
+            self._cache_live_ai_answer(presentation_title, slide_index, ai_answer, slide_info)
+            return ai_answer
+        if ai_answer == []:
+            self.add_message("[现场AI兜底] AI未识别到可用答案", 2)
+        else:
+            self.add_message("[现场AI兜底] AI现场分析失败", 2)
+        return None
 
     def answer_questions(self, problemid, problemtype, answer, limit):
         # 回答问题
@@ -392,48 +723,16 @@ class Lesson:
         print(f"answer: {answer}")
         enter_function_time = time.time()
         
-        # 如果answer为空或转bool为false，尝试使用AI缓存答案覆盖
+        # 如果answer为空或转bool为false，尝试使用AI缓存答案覆盖，缓存没有时现场下载题图分析
         if not answer and self.config.get('enable_ai_analysis', False):
             try:
-                # 从problems_ls中找到对应的问题，获取其slide index
-                current_problem = None
-                for problem in self.problems_ls:
-                    if problem.get("problemId") == problemid:
-                        current_problem = problem
-                        break
-                
-                if current_problem and current_problem.get("index"):
-                    slide_index = current_problem["index"]
-                    
-                    # 需要获取presentation_title，从当前问题所属的presentation获取
-                    # 遍历所有已下载的presentation来找到包含此问题的presentation
-                    for presentationid in getattr(self, 'downloaded_presentations', set()):
-                        try:
-                            ppt_data = self._get_ppt(presentationid)
-                            presentation_title = ppt_data["title"].replace("/", "_").strip()
-                            
-                            # 检查这个presentation是否包含当前问题
-                            slides = [slide for slide in ppt_data["slides"] if "problem" in slide.keys()]
-                            slide_indices = [slide["index"] for slide in slides]
-                            
-                            if slide_index in slide_indices:
-                                # 找到了包含此问题的presentation，尝试获取AI缓存答案
-                                cached_answers = self.ai_analyzer.load_cached_answers(
-                                    self.lessonname,
-                                    presentation_title
-                                )
-                                
-                                if cached_answers and str(slide_index) in cached_answers:
-                                    ai_answer = cached_answers[str(slide_index)]
-                                    if ai_answer:  # 确保AI答案不为空
-                                        answer = ai_answer
-                                        self.add_message(f"使用AI缓存答案 - 问题ID {problemid}, 幻灯片 {slide_index}: {ai_answer}", 0)
-                                        break
-                        except Exception as e:
-                            continue  # 如果某个presentation获取失败，继续尝试下一个
-                            
+                ai_answer = self._try_live_ai_answer(problemid)
+                if ai_answer:
+                    answer = ai_answer
+                    self.add_message(f"使用AI答案 - 问题ID {problemid}: {ai_answer}", 0)
             except Exception as e:
-                self.add_message(f"获取AI缓存答案失败: {str(e)}", 0)
+                self.add_message(f"[现场AI兜底] 获取AI答案失败: {str(e)}", 2)
+                self.add_message(f"[现场AI兜底] 异常详情: {traceback.format_exc()}", 0)
         
         if answer and problemtype != 3:
             wait_time = calculate_waittime(

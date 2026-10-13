@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -486,6 +487,366 @@ def test_get_problems_matches_any_problem_or_slide_identifier():
     problems = lesson.get_problems("pres-1")
 
     assert problems[0]["index"] == 9
+
+
+def test_live_ai_fallback_downloads_slide_image_analyzes_and_submits(monkeypatch, tmp_path):
+    lesson = make_lesson()
+    del lesson.get_problems
+    lesson.headers = {"Cookie": "sessionid=test"}
+    lesson.config.update(
+        {
+            "enable_ai_analysis": True,
+            "region": "cn",
+            "answer_config": {"answer_delay": {"type": 1, "custom": {"percent": 0}}},
+        }
+    )
+    lesson.downloaded_presentations = set()
+    lesson.problems_ls = [
+        {
+            "problemId": "problem-1",
+            "problemType": 1,
+            "answers": [],
+            "index": 3,
+            "presentationId": "pres-1",
+            "presentationTitle": "现场章节",
+            "cover": "https://example.invalid/slide-3.jpg",
+        }
+    ]
+
+    messages = []
+    lesson.add_message = lambda message, level=0: messages.append(str(message))
+
+    saved = []
+
+    class FakeAIAnalyzer:
+        cache_dir = str(tmp_path / "ai-cache")
+
+        def load_cached_answers(self, lesson_name, presentation_title):
+            return {}
+
+        def analyze_slide_with_openai(self, image_path, slide_index):
+            assert Path(image_path).exists()
+            assert slide_index == 3
+            return [2]
+
+        def save_cached_answers(
+            self,
+            lesson_name,
+            presentation_title,
+            answers,
+            slides_info=None,
+            analysis_status="completed",
+        ):
+            saved.append((lesson_name, presentation_title, answers, slides_info, analysis_status))
+
+    lesson._ai_analyzer = FakeAIAnalyzer()
+
+    class FakeResponse:
+        status_code = 200
+        text = json.dumps({"code": 0, "data": {}})
+
+    submitted = []
+
+    def fake_post(url, headers=None, data=None, proxies=None):
+        submitted.append(json.loads(data))
+        return FakeResponse()
+
+    def fake_get(url, headers=None, proxies=None, timeout=None):
+        assert url == "https://example.invalid/slide-3.jpg"
+
+        class ImageResponse:
+            status_code = 200
+            headers = {"content-type": "image/jpeg"}
+            content = b"fake-image-bytes"
+
+        return ImageResponse()
+
+    monkeypatch.setattr(Classes.requests, "post", fake_post)
+    monkeypatch.setattr(Classes.requests, "get", fake_get)
+    monkeypatch.setattr(Classes, "get_host", lambda region: "example.yuketang.test")
+    monkeypatch.setattr(Classes, "calculate_waittime", lambda *args: 0)
+
+    lesson.answer_questions("problem-1", 1, [], 30)
+
+    assert submitted == [
+        {
+            "problemId": "problem-1",
+            "problemType": 1,
+            "dt": submitted[0]["dt"],
+            "result": ["B"],
+        }
+    ]
+    assert saved
+    assert saved[0][2] == {"3": [2]}
+    assert saved[0][4] == "completed"
+    assert any("现场AI兜底" in message for message in messages)
+
+
+def test_live_ai_fallback_retries_with_context_when_ai_reports_insufficient_context(monkeypatch, tmp_path):
+    lesson = make_lesson()
+    del lesson.get_problems
+    lesson.headers = {"Cookie": "sessionid=test"}
+    lesson.config.update(
+        {
+            "enable_ai_analysis": True,
+            "region": "cn",
+            "answer_config": {"answer_delay": {"type": 1, "custom": {"percent": 0}}},
+        }
+    )
+    lesson.downloaded_presentations = set()
+    lesson.problems_ls = [
+        {
+            "problemId": "problem-1",
+            "problemType": 1,
+            "answers": [],
+            "index": 3,
+            "presentationId": "pres-1",
+            "presentationTitle": "现场章节",
+            "cover": "https://example.invalid/slide-3.jpg",
+        }
+    ]
+    lesson._get_ppt = lambda presentation_id: {
+        "title": "现场章节",
+        "slides": [
+            {"index": 1, "cover": "https://example.invalid/slide-1.jpg"},
+            {"index": 2, "cover": "https://example.invalid/slide-2.jpg"},
+            {
+                "index": 3,
+                "cover": "https://example.invalid/slide-3.jpg",
+                "problem": {"problemId": "problem-1"},
+            },
+        ],
+    }
+
+    messages = []
+    lesson.add_message = lambda message, level=0: messages.append(str(message))
+
+    saved = []
+    context_calls = []
+
+    class FakeAIAnalyzer:
+        cache_dir = str(tmp_path / "ai-cache")
+        INSUFFICIENT_CONTEXT_MARKER = "__INSUFFICIENT_CONTEXT__"
+
+        def load_cached_answers(self, lesson_name, presentation_title):
+            return {}
+
+        def analyze_slide_with_openai(self, image_path, slide_index):
+            assert Path(image_path).exists()
+            assert slide_index == 3
+            return self.INSUFFICIENT_CONTEXT_MARKER
+
+        def analyze_slide_with_context(self, image_paths, slide_index):
+            context_calls.append(([Path(path).name for path in image_paths], slide_index))
+            assert all(Path(path).exists() for path in image_paths)
+            return [2]
+
+        def save_cached_answers(
+            self,
+            lesson_name,
+            presentation_title,
+            answers,
+            slides_info=None,
+            analysis_status="completed",
+        ):
+            saved.append((lesson_name, presentation_title, answers, slides_info, analysis_status))
+
+    lesson._ai_analyzer = FakeAIAnalyzer()
+
+    class FakeResponse:
+        status_code = 200
+        text = json.dumps({"code": 0, "data": {}})
+
+    submitted = []
+    downloaded_urls = []
+
+    def fake_post(url, headers=None, data=None, proxies=None):
+        submitted.append(json.loads(data))
+        return FakeResponse()
+
+    def fake_get(url, headers=None, proxies=None, timeout=None):
+        downloaded_urls.append(url)
+
+        class ImageResponse:
+            status_code = 200
+            headers = {"content-type": "image/jpeg"}
+            content = b"fake-image-bytes"
+
+        return ImageResponse()
+
+    monkeypatch.setattr(Classes.requests, "post", fake_post)
+    monkeypatch.setattr(Classes.requests, "get", fake_get)
+    monkeypatch.setattr(Classes, "get_host", lambda region: "example.yuketang.test")
+    monkeypatch.setattr(Classes, "calculate_waittime", lambda *args: 0)
+
+    lesson.answer_questions("problem-1", 1, [], 30)
+
+    assert context_calls == [(["1.jpg", "2.jpg", "3.jpg"], 3)]
+    assert submitted == [
+        {
+            "problemId": "problem-1",
+            "problemType": 1,
+            "dt": submitted[0]["dt"],
+            "result": ["B"],
+        }
+    ]
+    assert saved[0][2] == {"3": [2]}
+    assert downloaded_urls == [
+        "https://example.invalid/slide-3.jpg",
+        "https://example.invalid/slide-1.jpg",
+        "https://example.invalid/slide-2.jpg",
+    ]
+    assert any("上下文重试 1/4" in message for message in messages)
+
+
+def test_live_ai_fallback_does_not_retry_context_on_empty_answer(monkeypatch, tmp_path):
+    lesson = make_lesson()
+    del lesson.get_problems
+    lesson.headers = {"Cookie": "sessionid=test"}
+    lesson.config.update(
+        {
+            "enable_ai_analysis": True,
+            "region": "cn",
+            "answer_config": {"answer_delay": {"type": 1, "custom": {"percent": 0}}},
+        }
+    )
+    lesson.problems_ls = [
+        {
+            "problemId": "problem-1",
+            "problemType": 1,
+            "answers": [],
+            "index": 3,
+            "presentationId": "pres-1",
+            "presentationTitle": "现场章节",
+            "cover": "https://example.invalid/slide-3.jpg",
+        }
+    ]
+    lesson._get_ppt = lambda presentation_id: {
+        "title": "现场章节",
+        "slides": [
+            {"index": 1, "cover": "https://example.invalid/slide-1.jpg"},
+            {"index": 2, "cover": "https://example.invalid/slide-2.jpg"},
+            {
+                "index": 3,
+                "cover": "https://example.invalid/slide-3.jpg",
+                "problem": {"problemId": "problem-1"},
+            },
+        ],
+    }
+
+    messages = []
+    lesson.add_message = lambda message, level=0: messages.append(str(message))
+
+    class FakeAIAnalyzer:
+        cache_dir = str(tmp_path / "ai-cache")
+        INSUFFICIENT_CONTEXT_MARKER = "__INSUFFICIENT_CONTEXT__"
+
+        def load_cached_answers(self, lesson_name, presentation_title):
+            return {}
+
+        def analyze_slide_with_openai(self, image_path, slide_index):
+            return []
+
+        def analyze_slide_with_context(self, image_paths, slide_index):
+            raise AssertionError("empty answer must not trigger context retry")
+
+    lesson._ai_analyzer = FakeAIAnalyzer()
+
+    def fake_get(url, headers=None, proxies=None, timeout=None):
+        class ImageResponse:
+            status_code = 200
+            headers = {"content-type": "image/jpeg"}
+            content = b"fake-image-bytes"
+
+        return ImageResponse()
+
+    submitted = []
+    monkeypatch.setattr(Classes.requests, "get", fake_get)
+    monkeypatch.setattr(Classes.requests, "post", lambda *args, **kwargs: submitted.append(args))
+    monkeypatch.setattr(Classes, "get_host", lambda region: "example.yuketang.test")
+
+    lesson.answer_questions("problem-1", 1, [], 30)
+
+    assert submitted == []
+    assert not any("上下文重试" in message for message in messages)
+
+
+def test_live_ai_fallback_does_not_submit_when_context_retries_exhausted(monkeypatch, tmp_path):
+    lesson = make_lesson()
+    del lesson.get_problems
+    lesson.headers = {"Cookie": "sessionid=test"}
+    lesson.config.update(
+        {
+            "enable_ai_analysis": True,
+            "region": "cn",
+            "answer_config": {"answer_delay": {"type": 1, "custom": {"percent": 0}}},
+        }
+    )
+    lesson.problems_ls = [
+        {
+            "problemId": "problem-1",
+            "problemType": 1,
+            "answers": [],
+            "index": 5,
+            "presentationId": "pres-1",
+            "presentationTitle": "现场章节",
+            "cover": "https://example.invalid/slide-5.jpg",
+        }
+    ]
+    lesson._get_ppt = lambda presentation_id: {
+        "title": "现场章节",
+        "slides": [
+            {"index": 1, "cover": "https://example.invalid/slide-1.jpg"},
+            {"index": 2, "cover": "https://example.invalid/slide-2.jpg"},
+            {"index": 3, "cover": "https://example.invalid/slide-3.jpg"},
+            {"index": 4, "cover": "https://example.invalid/slide-4.jpg"},
+            {
+                "index": 5,
+                "cover": "https://example.invalid/slide-5.jpg",
+                "problem": {"problemId": "problem-1"},
+            },
+        ],
+    }
+
+    messages = []
+    lesson.add_message = lambda message, level=0: messages.append(str(message))
+    context_call_count = 0
+
+    class FakeAIAnalyzer:
+        cache_dir = str(tmp_path / "ai-cache")
+        INSUFFICIENT_CONTEXT_MARKER = "__INSUFFICIENT_CONTEXT__"
+
+        def load_cached_answers(self, lesson_name, presentation_title):
+            return {}
+
+        def analyze_slide_with_openai(self, image_path, slide_index):
+            return self.INSUFFICIENT_CONTEXT_MARKER
+
+        def analyze_slide_with_context(self, image_paths, slide_index):
+            nonlocal context_call_count
+            context_call_count += 1
+            return self.INSUFFICIENT_CONTEXT_MARKER
+
+    lesson._ai_analyzer = FakeAIAnalyzer()
+
+    def fake_get(url, headers=None, proxies=None, timeout=None):
+        class ImageResponse:
+            status_code = 200
+            headers = {"content-type": "image/jpeg"}
+            content = b"fake-image-bytes"
+
+        return ImageResponse()
+
+    submitted = []
+    monkeypatch.setattr(Classes.requests, "get", fake_get)
+    monkeypatch.setattr(Classes.requests, "post", lambda *args, **kwargs: submitted.append(args))
+    monkeypatch.setattr(Classes, "get_host", lambda region: "example.yuketang.test")
+
+    lesson.answer_questions("problem-1", 1, [], 30)
+
+    assert context_call_count == 4
+    assert submitted == []
+    assert any("上下文不足已耗尽" in message for message in messages)
 
 
 def test_async_download_uses_timeline_problem_page_for_pdf_generation(monkeypatch):
