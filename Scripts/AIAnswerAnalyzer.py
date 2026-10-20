@@ -336,14 +336,21 @@ class AIAnswerAnalyzer:
             return str(message.get("content") or "")
         return ""
 
+    def _response_summary_text(self, data) -> str:
+        texts = []
+        for item in data.get("output") or []:
+            if not isinstance(item, dict) or item.get("type") != "reasoning":
+                continue
+            for part in item.get("summary") or []:
+                if isinstance(part, dict) and part.get("text"):
+                    texts.append(str(part["text"]))
+        return "\n".join(texts)
+
     def _log_response_metadata(self, data, log_summary=True):
         if log_summary:
-            for item in data.get("output") or []:
-                if not isinstance(item, dict) or item.get("type") != "reasoning":
-                    continue
-                for part in item.get("summary") or []:
-                    if isinstance(part, dict) and part.get("text"):
-                        self._log(f"推理摘要: {part['text']}")
+            summary = self._response_summary_text(data)
+            if summary:
+                self._log(f"推理摘要: {summary}")
         usage = data.get("usage") or {}
         if usage:
             details = usage.get("output_tokens_details") or {}
@@ -376,7 +383,8 @@ class AIAnswerAnalyzer:
     def _extract_sse_content(self, lines) -> str:
         parts = []
         final_text = None
-        summary_streamed = False
+        summaries = {}
+        final_summary = ""
         terminal = False
         responses_events = False
         for payload in self._iter_sse_data(lines):
@@ -392,10 +400,11 @@ class AIAnswerAnalyzer:
                 raise ValueError(f"AI流式错误: {data.get('error') or data}")
             if event_type in ("response.completed", "response.incomplete", "response.failed"):
                 final = data.get("response") or {}
-                self._log_response_metadata(final, log_summary=not summary_streamed)
+                self._log_response_metadata(final, log_summary=False)
                 if event_type != "response.completed":
                     raise ValueError(f"AI流式响应未完成: {event_type}")
                 final_text = self._response_output_text(final) or final_text
+                final_summary = self._response_summary_text(final)
                 terminal = True
                 break
             if event_type == "response.output_text.delta":
@@ -405,12 +414,12 @@ class AIAnswerAnalyzer:
             elif event_type == "response.reasoning_summary_text.delta":
                 delta = data.get("delta")
                 if delta:
-                    self._log(f"推理摘要片段: {delta}")
-                    summary_streamed = True
-            elif event_type == "response.reasoning_summary_text.done" and not summary_streamed:
+                    key = (data.get("item_id", data.get("output_index", 0)), data.get("summary_index", 0))
+                    summaries[key] = summaries.get(key, "") + str(delta)
+            elif event_type == "response.reasoning_summary_text.done":
                 if data.get("text"):
-                    self._log(f"推理摘要: {data['text']}")
-                    summary_streamed = True
+                    key = (data.get("item_id", data.get("output_index", 0)), data.get("summary_index", 0))
+                    summaries[key] = str(data["text"])
             else:
                 choices = data.get("choices") or []
                 if choices and isinstance(choices[0], dict):
@@ -426,6 +435,9 @@ class AIAnswerAnalyzer:
             raise requests.exceptions.ConnectionError("Responses流中断，未收到完成事件")
         if not terminal:
             raise requests.exceptions.ConnectionError("SSE流中断，未收到结束标记")
+        summary = final_summary or "\n".join(summaries.values())
+        if summary:
+            self._log(f"推理摘要: {summary}")
         return (final_text if final_text is not None else "".join(parts)).strip()
 
     def _extract_response_content(self, response) -> str:

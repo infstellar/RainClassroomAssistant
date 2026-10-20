@@ -4,12 +4,14 @@ requests
 urllib3
 websocket_client
 aiofiles
+aiohttp
 fpdf
 numpy
 deepDiff
 Pillow
 PyPDF2
 win10toast; platform_system=='Windows'
+pywin32; platform_system=='Windows'
 pyinstaller
 pre-commit
 openai>=1.0.0

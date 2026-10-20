@@ -4,11 +4,12 @@
 配置加载回归测试
 
 验证：
-1. 已有config.json时，ai_config.json中的AI字段仍会覆盖应用
+1. AI参数统一来自config.json，旧的独立配置文件不再生效
 2. ai_analysis_settings会递归合并，而不是整块替换
-3. 非AI字段不会被ai_config.json误覆盖
+3. 主配置路径及旧版APPDATA主配置迁移保持正常
 """
 
+import json
 import sys
 import types
 
@@ -30,10 +31,10 @@ win10toast_stub.ToastNotifier = _ToastNotifier
 sys.modules.setdefault("win10toast", win10toast_stub)
 
 from Scripts import Utils
-from Scripts.Utils import apply_ai_config_overrides, get_initial_data
+from Scripts.Utils import get_initial_data
 
 
-def test_apply_ai_config_overrides():
+def test_get_initial_data_preserves_main_config():
     base_config = {
         "sessionid": "demo-session",
         "region": 0,
@@ -49,30 +50,48 @@ def test_apply_ai_config_overrides():
             "delay_between_requests": 1,
         },
     }
-    ai_config = {
-        "enable_ai_analysis": True,
-        "openai_api_key": "new-key",
-        "openai_api_base": "https://example.com/v1",
-        "openai_model": "gpt-5.4",
-        "ai_analysis_settings": {
-            "request_timeout": 120,
-            "reasoning_effort": "low",
-        },
-        "auto_answer": False,
+    merged = get_initial_data(base_config)
+
+    for key, value in base_config.items():
+        if key == "ai_analysis_settings":
+            for setting, setting_value in value.items():
+                assert merged[key][setting] == setting_value
+        else:
+            assert merged[key] == value
+
+
+def test_legacy_ai_config_is_ignored(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    appdata_root = tmp_path / "appdata"
+    working_dir = tmp_path / "working"
+    for directory in (project_root, appdata_root / "RainClassroomAssistant", working_dir):
+        directory.mkdir(parents=True)
+        (directory / "ai_config.json").write_text(json.dumps({
+            "enable_ai_analysis": True,
+            "openai_api_key": "legacy-key",
+            "openai_model": "legacy-model",
+            "ai_analysis_settings": {"request_timeout": 120},
+        }), encoding="utf-8")
+    monkeypatch.setattr(Utils, "get_project_root", lambda: str(project_root))
+    monkeypatch.setenv("APPDATA", str(appdata_root))
+    monkeypatch.chdir(working_dir)
+    main_config = {
+        "enable_ai_analysis": False,
+        "openai_api_key": "main-key",
+        "openai_model": "main-model",
+        "ai_analysis_settings": {"request_timeout": 60},
     }
+    config_path = project_root / "config.json"
+    config_path.write_text(json.dumps(main_config), encoding="utf-8")
+    merged = get_initial_data(json.loads(config_path.read_text(encoding="utf-8")))
 
-    merged = apply_ai_config_overrides(base_config, ai_config)
-
-    assert merged["sessionid"] == "demo-session"
-    assert merged["auto_answer"] is True
-    assert merged["enable_ai_analysis"] is True
-    assert merged["openai_api_key"] == "new-key"
-    assert merged["openai_api_base"] == "https://example.com/v1"
-    assert merged["openai_model"] == "gpt-5.4"
-    assert merged["ai_analysis_settings"]["max_retries"] == 3
-    assert merged["ai_analysis_settings"]["request_timeout"] == 120
-    assert merged["ai_analysis_settings"]["reasoning_effort"] == "low"
-    assert merged["ai_analysis_settings"]["delay_between_requests"] == 1
+    assert merged["enable_ai_analysis"] is False
+    assert merged["openai_api_key"] == "main-key"
+    assert merged["openai_model"] == "main-model"
+    assert merged["ai_analysis_settings"]["request_timeout"] == 60
+    defaults = get_initial_data()
+    assert defaults["enable_ai_analysis"] is False
+    assert defaults["openai_api_key"] == ""
 
 
 def test_get_initial_data_keeps_nested_defaults():
@@ -91,7 +110,7 @@ def test_get_initial_data_keeps_nested_defaults():
 
     assert merged["audio_config"]["audio_type"]["send_danmu"] is True
     assert "receive_problem" in merged["audio_config"]["audio_type"]
-    assert merged["ai_analysis_settings"]["request_timeout"] in (60, 120)
+    assert merged["ai_analysis_settings"]["request_timeout"] == 60
     assert "max_retries" in merged["ai_analysis_settings"]
     assert "delay_between_requests" in merged["ai_analysis_settings"]
 
@@ -103,13 +122,13 @@ def test_config_path_defaults_to_project_directory(monkeypatch, tmp_path):
     assert Utils.get_config_path() == str(tmp_path / "config.json")
 
 
-def test_ai_stream_settings_survive_config_merge(monkeypatch):
-    monkeypatch.setattr(Utils, "load_ai_config", lambda: ({
+def test_ai_stream_settings_survive_config_merge():
+    merged = get_initial_data({
         "ai_analysis_settings": {
             "stream": False, "reasoning_summary": None, "max_output_tokens": 32768,
+            "reasoning_effort": "low",
         },
-    }, "ai_config.json"))
-    merged = get_initial_data({"ai_analysis_settings": {"reasoning_effort": "low"}})
+    })
     assert merged["ai_analysis_settings"]["stream"] is False
     assert merged["ai_analysis_settings"]["reasoning_summary"] is None
     assert merged["ai_analysis_settings"]["max_output_tokens"] == 32768
@@ -134,6 +153,7 @@ def test_get_config_path_migrates_existing_appdata_config(monkeypatch, tmp_path)
 
 
 if __name__ == "__main__":
-    test_apply_ai_config_overrides()
+    test_get_initial_data_preserves_main_config()
     test_get_initial_data_keeps_nested_defaults()
+    test_ai_stream_settings_survive_config_merge()
     print("配置加载回归测试通过")

@@ -7,13 +7,14 @@ import requests
 if sys.platform.startswith("win"):
     import win32api
 
-from Scripts.Utils import is_debug
+RELEASES_URL = "https://github.com/infstellar/RainClassroomAssistant/releases/latest"
 
 
 def get_version():
     version = ""
-    if is_debug():
-        with open("file_version_info.txt", "r") as f:
+    if not getattr(sys, "frozen", False):
+        version_path = os.path.join(os.path.dirname(__file__), "..", "file_version_info.txt")
+        with open(version_path, "r", encoding="utf-8") as f:
             version_info = f.read()
         version = re.search("u'FileVersion', u'.*'", version_info).group().split("'")[3]
     else:
@@ -35,28 +36,19 @@ def get_version():
 
 class Update:
     def __init__(self, path):
-        self.url = "https://github.com/travellerse/RainClassroomAssistant/releases/latest/download/RainClassroomAssistant.exe"
+        self.url = f"{RELEASES_URL}/download/RainClassroomAssistant.exe"
         self.path = path
         self.filename = "RainClassroomAssistant.exe"
 
     def get_url(self):
-        tag_url = "https://gitee.com/travellerse/rain-classroom-assistant-releases/releases/latest"
-        r = requests.get(tag_url)
-        tag = re.search(
-            r"travellerse/rain-classroom-assistant-releases/releases/tag/.+?\"", r.text
-        ).group()
-        tag = tag.split("/")[-1][:-1]
-        print(tag)
-        self.url = f"https://github.com/travellerse/RainClassroomAssistant/releases/latest/download/RainClassroomAssistant.exe"
-        print(self.url)
+        self.url = f"{RELEASES_URL}/download/{self.filename}"
+        return self.url
 
     def get_latest_version(self):
-        # "https://gitee.com/travellerse/rain-classroom-assistant-releases/raw/master/version.txt"
-        version_latest = "https://github.com/travellerse/RainClassroomAssistant/releases/latest/download/version.txt"
-        try:
-            version = requests.get(version_latest).text
-        except:
-            version = requests.get(version_latest, verify=False).text
+        version_latest = f"{RELEASES_URL}/download/version.txt"
+        response = requests.get(version_latest, timeout=10)
+        response.raise_for_status()
+        version = response.text.strip()
         if version.startswith("v"):
             version = version[1:]
         return Version(version)
@@ -80,8 +72,10 @@ class Update:
             )
 
     def download(self):
+        response = requests.get(self.url, timeout=60)
+        response.raise_for_status()
         with open(self.path + "_" + self.filename, "wb") as f:
-            f.write(requests.get(self.url).content)
+            f.write(response.content)
 
     def update(self):
         # self.get_url()

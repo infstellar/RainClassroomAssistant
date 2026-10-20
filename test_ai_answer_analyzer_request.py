@@ -61,7 +61,8 @@ def test_stream_is_consumed_before_close_without_buffering_and_deduplicates(monk
         def iter_lines(self, **kwargs):
             assert not self.closed and not session.closed
             events = [
-                {"type": "response.reasoning_summary_text.delta", "delta": "检查题目"},
+                *({"type": "response.reasoning_summary_text.delta", "delta": char} for char in "检查题目"),
+                {"type": "response.reasoning_summary_text.done", "text": "检查题目"},
                 {"type": "response.output_text.delta", "delta": "["},
                 {"type": "response.output_text.delta", "delta": "2]"},
                 {"type": "response.output_text.done", "text": "[2]"},
@@ -70,8 +71,7 @@ def test_stream_is_consumed_before_close_without_buffering_and_deduplicates(monk
             for index, event in enumerate(events):
                 yield ("data: " + json.dumps(event, ensure_ascii=False)).encode("utf-8")
                 yield b""
-                if index == 0:
-                    assert any("推理摘要片段: 检查题目" in message for message in logs)
+                assert not any("推理摘要:" in message or "推理摘要片段:" in message for message in logs)
             raise AssertionError("must stop after response.completed")
 
         def close(self):
@@ -154,6 +154,25 @@ def test_sse_keeps_text_done_when_completed_snapshot_omits_output():
     assert analyzer._extract_sse_content(lines) == "[3]"
 
 
+@pytest.mark.parametrize("terminal", ["[DONE]", json.dumps({"type": "response.completed", "response": {"status": "completed"}})])
+def test_sse_logs_all_summary_parts_once_without_repeating_done_text(terminal):
+    logs = []
+    analyzer = AIAnswerAnalyzer({"enable_ai_analysis": False}, lambda message, _: logs.append(message))
+    events = [
+        {"type": "response.reasoning_summary_text.delta", "summary_index": 0, "delta": "检查"},
+        {"type": "response.reasoning_summary_text.delta", "summary_index": 0, "delta": "题目"},
+        {"type": "response.reasoning_summary_text.done", "summary_index": 0, "text": "检查题目"},
+        {"type": "response.reasoning_summary_text.done", "summary_index": 1, "text": "确认选项"},
+        {"type": "response.output_text.delta", "delta": "[2]"},
+    ]
+    lines = []
+    for event in events:
+        lines.extend(["data: " + json.dumps(event), ""])
+    lines.extend(["data: " + terminal, ""])
+    assert analyzer._extract_sse_content(lines) == "[2]"
+    assert [message for message in logs if "推理摘要" in message] == ["[AI分析器] 推理摘要: 检查题目\n确认选项"]
+
+
 @pytest.mark.parametrize("tail", [None, {"type": "error", "message": "upstream failed"}])
 def test_sse_rejects_broken_or_error_stream(tail):
     analyzer = AIAnswerAnalyzer({"enable_ai_analysis": False})
@@ -164,12 +183,13 @@ def test_sse_rejects_broken_or_error_stream(tail):
         analyzer._extract_sse_content(lines)
 
 
-def test_real_http_stream_delivers_summary_before_server_finishes():
+def test_real_http_stream_is_read_incrementally_but_summary_is_logged_once():
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     summary_received = threading.Event()
     observed = {}
+    logs = []
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -180,8 +200,9 @@ def test_real_http_stream_delivers_summary_before_server_finishes():
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            event = {"type": "response.reasoning_summary_text.delta", "delta": "检查题目"}
-            self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+            for char in "检查题目":
+                event = {"type": "response.reasoning_summary_text.delta", "delta": char}
+                self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
             self.wfile.flush()
             observed["incremental"] = summary_received.wait(3)
             final = {"type": "response.completed", "response": {
@@ -195,16 +216,23 @@ def test_real_http_stream_delivers_summary_before_server_finishes():
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
 
-    def log(message, _):
-        if "推理摘要片段: 检查题目" in message:
-            summary_received.set()
-
     try:
-        analyzer = AIAnswerAnalyzer({"enable_ai_analysis": False}, log)
+        analyzer = AIAnswerAnalyzer({"enable_ai_analysis": False}, lambda message, _: logs.append(message))
+        iter_sse_data = analyzer._iter_sse_data
+
+        def observe_stream(lines):
+            for payload in iter_sse_data(lines):
+                if json.loads(payload).get("delta") == "目":
+                    assert not any("推理摘要:" in message for message in logs)
+                    summary_received.set()
+                yield payload
+
+        analyzer._iter_sse_data = observe_stream
         url, payload = analyzer._build_ai_request(f"http://127.0.0.1:{server.server_port}/v1", "test-model", "image")
         assert analyzer._post_ai_request(url, {}, payload) == [2]
         assert observed["incremental"] is True
         assert observed["payload"]["stream"] is True
+        assert [message for message in logs if "推理摘要:" in message] == ["[AI分析器] 推理摘要: 检查题目"]
     finally:
         server.shutdown()
         server.server_close()

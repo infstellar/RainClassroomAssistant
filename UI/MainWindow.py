@@ -19,7 +19,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from Scripts.Monitor import monitor
 from Scripts.Logger import logger
-from Scripts.Update import Update, get_version
+from Scripts.Update import RELEASES_URL, Update, get_version
 from Scripts.Utils import *
 from UI.Config import Config_Ui
 from UI.Login import Login_Ui
@@ -218,14 +218,14 @@ class MainWindow_Ui(QtCore.QObject):
             self.add_message_signal.emit(f"最新版本：{new_version}", 0)
             if update.have_new_version(new_version):
                 self.add_message_signal.emit(
-                    f"最新版本地址：https://github.com/travellerse/RainClassroomAssistant/releases/latest",
+                    f"最新版本地址：{RELEASES_URL}",
                     0,
                 )
                 if is_debug():
                     updateBox = QtWidgets.QMessageBox.question(
                         None,
                         "发现新版本",
-                        f"发现新版本{update.get_latest_version()}，是否更新",
+                        f"发现新版本{new_version}，是否更新",
                         QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                         QtWidgets.QMessageBox.Yes,
                     )

@@ -29,14 +29,6 @@ else:
 
 lock = threading.Lock()
 
-AI_CONFIG_KEYS = (
-    "enable_ai_analysis",
-    "openai_api_key",
-    "openai_api_base",
-    "openai_model",
-    "ai_analysis_settings",
-)
-
 
 def is_debug():
     # 判断是否为debug模式
@@ -260,38 +252,6 @@ def merge_known_config(base_config, override_config):
     return merged
 
 
-def get_ai_config_paths():
-    """返回ai_config.json的候选路径，按优先级排序。"""
-    return [
-        os.path.join(get_project_root(), "ai_config.json"),
-        os.path.join(get_appdata_config_dir(), "ai_config.json"),
-        os.path.abspath("ai_config.json"),
-    ]
-
-
-def load_ai_config():
-    """加载ai_config.json，返回(配置字典, 配置路径)。"""
-    for ai_config_path in get_ai_config_paths():
-        if os.path.exists(ai_config_path):
-            with open(ai_config_path, "r", encoding="utf-8") as f:
-                return json.load(f), ai_config_path
-    return None, None
-
-
-def apply_ai_config_overrides(config, ai_config):
-    """将AI配置覆盖到主配置，仅处理AI相关字段。"""
-    merged = deepcopy(config)
-    if not ai_config:
-        return merged
-
-    ai_overrides = {}
-    for key in AI_CONFIG_KEYS:
-        if key in ai_config:
-            ai_overrides[key] = ai_config[key]
-
-    return merge_known_config(merged, ai_overrides)
-
-
 def get_initial_data(old_config=None):
     # 默认配置信息
     initial_data = {
@@ -349,17 +309,6 @@ def get_initial_data(old_config=None):
 
     if old_config:
         initial_data = merge_known_config(initial_data, old_config)
-    
-    # 尝试加载AI配置文件
-    try:
-        ai_config, _ = load_ai_config()
-        if ai_config:
-            initial_data = apply_ai_config_overrides(initial_data, ai_config)
-        else:
-            print("未找到ai_config.json文件，使用默认AI配置")
-            
-    except Exception as e:
-        print(f"加载AI配置文件失败: {e}")
 
     return initial_data
 

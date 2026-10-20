@@ -16,7 +16,28 @@
  - 简洁美观的UI
  - 课堂ppt下载
  - LLM问题回答
-  
+
+## 首次登录与使用
+
+1. 启动程序后，在登录窗口选择与你的账号对应的平台：雨课堂、荷塘雨课堂、长江雨课堂或黄河雨课堂，再使用微信扫码登录。默认平台为荷塘雨课堂；登录过期时可点击主窗口的“重新登录”。
+2. **程序完成登录后会自动开始监听，且默认开启自动答题。** 首次使用建议先点击“停止监听”，再点击“配置”检查各项设置。
+3. 配置窗口分为“课堂自动化”“提醒通知”“AI 分析”“登录与平台”四页。保存设置后，已在运行的课程任务需要停止监听再重新启动；修改登录信息或直接编辑 `config.json` 后，请重启应用。
+4. 点击“启动”恢复监听。程序会检测正在上课的课程，并进行签到、下载课件及已启用的自动操作；没有正在进行的课程时会继续等待。需要暂停时点击“停止监听”。
+5. **本程序不累计雨课堂在线时长，仍需自行打开雨课堂。** 自动答题针对上课过程中发布的题目，不包含课后作业或考试；AI 答案可能出错，分析失败、没有可用答案或超过答题时限时需要自行处理。
+
+### 默认设置
+
+| 功能 | 默认行为 | 调整位置 |
+| --- | --- | --- |
+| 自动签到 | 监听到课程后执行，带随机延迟 | 配置 → 课堂自动化 → 自动签到 |
+| 自动答题 | 开启，使用默认延迟策略 | 配置 → 课堂自动化 → 自动答题 |
+| 自动弹幕 | 关闭；启用后默认阈值为每分钟 5 条相同弹幕 | 配置 → 课堂自动化 → 自动弹幕 |
+| 语音提醒 | 开启，具体提醒类型可单独调整 | 配置 → 提醒通知 |
+| AI 分析 | 关闭，需填写密钥、地址和模型后启用 | 配置 → AI 分析 |
+| 邮件通知 | 关闭，需填写 SMTP 配置后启用 | 配置 → 提醒通知 |
+
+完整字段见 [主配置示例](config.example.json)，详细配置方法见 [配置指南](CONFIG_SETUP_GUIDE.md)。已有 `config.json` 时请修改相应字段，不要直接用示例覆盖登录信息和其他设置。
+
 ## 项目介绍
 
 突然多了几个stars，写一下项目介绍好了（）
@@ -27,54 +48,105 @@
 
 ### LLM回答功能
 
-- 参数配置：可直接在项目目录下的 `config.json` 中填写 AI 参数，完整主配置示例见 `config.example.json`。也可复制 `ai_config_example.json` 为 `ai_config.json`，单独维护 AI 参数。
+- 参数配置：点击主窗口“配置”，在“AI 分析”页填写 API 密钥、地址、模型及请求参数并启用分析，也可以编辑项目目录下的 `config.json`。完整主配置示例见 [config.example.json](config.example.json)，界面配置说明见 [配置指南](CONFIG_SETUP_GUIDE.md#在应用设置中配置)。
+- 接口要求：模型需要支持图片输入，服务商需要支持所选协议。默认使用 `responses`，也可改为 `chat_completions`；`openai_api_base` 填 API 基础地址（例如 `https://api.openai.com/v1`），不要填写完整的 `/responses` 或 `/chat/completions` 请求地址。模型名和推理参数以服务商实际支持情况为准。
 
-> `ai_config.json` 是可选的 AI 配置覆盖文件，仍会被程序读取。程序启动时，其 AI 配置会覆盖 `config.json` 中的对应字段，并同步回 `config.json`；`ai_analysis_settings` 会递归合并，未指定的设置会保留。修改后重启程序即可生效。
->
-> 如果 AI 参数已经完整保存在 `config.json` 中，可以删除 `ai_config.json`，之后只维护 `config.json`。若保留 `ai_config.json`，只修改 `config.json` 中的同名 AI 参数，重新加载配置时可能会被覆盖。程序还会查找 `%APPDATA%/RainClassroomAssistant/ai_config.json` 和当前工作目录下的同名文件；如需完全停用此覆盖机制，也需确认这些位置没有该文件。
+> 已移除 `ai_config.json` 的读取和覆盖机制。旧用户如仅在该文件保存过 AI 参数，请先将其中的 AI 字段合并到 `config.json`，再删除旧文件。程序会为主配置补齐缺少的默认设置，修改后重启程序生效。
 
-1. PPT下载完之后，会提取PPT的所有问题；
-2. Scripts\AIAnswerAnalyzer.py 会拿着问题PPT发给AI；
-3. 生成的答案json会放在ai_answers_cache目录下，文件名是PPT的文件名。
+1. 课件图片下载完成后，程序识别其中的题目页，逐题调用 AI，并缓存可用答案。
+2. 实际答题时会尝试使用缓存；启用 AI 后，如果仍没有答案，会尝试匹配当前题目及所属 PPT，下载题图进行现场分析。现场分析依赖可用的题图及题目匹配信息，不保证每次都能触发成功。
+3. 当 AI 明确返回“上下文不足”时，批量分析和现场分析都支持逐步加入同一 PPT 中目标题页之前的页面重试，目标图片总数依次为 3、5、7、9，最多扩展 4 轮；可用前置页面不足时实际发送数量会更少。
+4. API 错误、未识别到答案或上下文重试耗尽时，不会将失败结果作为有效答案提交。请留意提醒并及时人工作答。详见 [AI 功能说明](AI_ANALYSIS_README.md)。
 
-~~现在，答案json可以人工填写（我是这么干的，因为可以二次验证），填写完后无需重启，每次尝试回答问题会重新加载json保证最新。~~ LLM太好用了，已经支持openai response协议。
+### 答案缓存与人工修改
 
-填写json的方法在答案json中。例：
+缓存保存在启动工作目录下的 `ai_answers_cache/课程名_PPT标题.json`，课程名和标题中的非法文件名字符会被替换。下载文件默认位于 `downloads/`，现场分析的题图位于 `ai_answers_cache/_live_images/`。从源码运行时，建议在项目根目录启动，以便定位这些文件。
+
+当前缓存包含 `metadata`、`answers` 和 `manual_answers`。例如下面是一份简化的完整缓存，实际编辑时请保留程序生成的其他元数据和题目条目：
+
 ```json
-"instructions": {
-                        "manual_fill_guide": "人工填写说明：",
-                        "format": "与AI答案格式相同，使用数组表示答案",
-                        "examples": {
-                            "单选题": "[\"A\"] 表示A选项正确，[\"B\"] 表示B选项正确",
-                            "多选题": "[\"A\",\"C\"] 表示A、C选项正确",
-                            "判断题": "目前没遇到过判断题，欢迎反馈",
-                            "填空题": "例子：[\"8\",\"1152\"] 表示8、1152是正确答案。顺序与问题顺序一致。"
-                        },
-                        "usage": "1. 查看对应幻灯片图片；2. 在manual_answers中找到对应题目；3. 修改数组内容为正确答案；4. 可选择将答案移动到answers部分"
-                    }
+{
+  "metadata": {
+    "lesson_name": "示例课程",
+    "presentation_title": "第一章",
+    "version": "2.0"
+  },
+  "answers": {
+    "3": ["A"]
+  },
+  "manual_answers": {
+    "3": ["B"],
+    "5": ["A", "C"],
+    "8": ["8", "1152"]
+  }
+}
 ```
+
+键名是缓存中的幻灯片 `index`，应沿用已有条目，不要自行按查看器页码重新编号。`answers` 保存 AI 答案，**非空的 `manual_answers` 优先于同一题的 AI 答案**；上例中索引 `3` 最终使用 `B`，`5` 为多选，`8` 为按空格顺序填写的填空答案。空数组 `[]` 表示未填写人工答案，不会清除已有 AI 答案。
+
+人工修改保存后，后续读取缓存时生效，无需重启；已经提交的答案不会改变，也不会自动重新提交。请在题目发布前完成修改。旧的纯答案字典格式仍可读取。
 
 ### 邮件通知配置
 
-程序会在配置文件中自动补齐 `email_config`。如需让所有“自动答题情况提醒”（`type=4`，包括自动回答成功/失败、没有找到答案等）同时发送邮件，可编辑项目目录下的 `config.json`：
+程序会在配置文件中自动补齐 `email_config`。如需让所有“自动答题情况提醒”（包括自动回答成功/失败、没有找到答案等）同时发送邮件，可点击“配置”，在“提醒通知”页配置并发送测试邮件，也可以修改项目目录下 `config.json` 的 `email_config` 字段：
 
 ```json
-"email_config": {
-  "enabled": true,
-  "smtp_server": "smtp.example.com",
-  "smtp_port": 465,
-  "username": "sender@example.com",
-  "password": "邮箱授权码或密码",
-  "sender": "sender@example.com",
-  "recipient": "receiver@example.com",
-  "subject": "雨课堂助手通知",
-  "use_ssl": true,
-  "starttls": true,
-  "timeout": 10
+{
+  "email_config": {
+    "enabled": true,
+    "smtp_server": "smtp.example.com",
+    "smtp_port": 465,
+    "username": "sender@example.com",
+    "password": "邮箱授权码或密码",
+    "sender": "sender@example.com",
+    "recipient": "receiver@example.com",
+    "subject": "雨课堂助手通知",
+    "use_ssl": true,
+    "starttls": true,
+    "timeout": 10
+  }
 }
 ```
 
 多数邮箱服务需要使用“授权码”而不是登录密码。
+
+## 数据、隐私与 API 费用
+
+- `config.json` 以明文保存登录会话 `sessionid`、AI API 密钥和邮箱凭据。请勿提交到仓库、上传到 Issue 或发送给他人；即使密码在配置界面中隐藏，文件本身也没有加密。
+- 启用 AI 后，题目图片会发送到你配置的 API 服务商；上下文重试还会发送同一 PPT 中的前置页面。使用前请确认有权向该服务商提供相关课件内容，并了解其数据处理规则。关闭 AI 后不进行 AI 分析请求。
+- API 费用和额度由服务商计算。逐题分析、现场分析及上下文重试都可能增加请求与图片/token 用量，缓存不能保证完全避免重复请求。
+- 开启邮件通知后，答题提醒内容会通过配置的 SMTP 服务发送到收件邮箱。课件、题图、答案和日志也会保存在本机，分享前请检查个人及课程信息。
+- 本项目非雨课堂官方工具，请遵守学校、课程和平台的使用要求；自动操作与 AI 答案需要自行核验。
+
+## 常见问题与反馈
+
+- **登录失败或看不到课程**：先确认登录窗口的平台选择正确、会话未过期，且课程正在上课；必要时重新扫码登录。
+- **AI 没有工作**：检查“AI 分析”是否启用、密钥是否有效、模型是否支持图片及所选协议，并查看日志中的接口错误。不要将网页聊天地址填为 API 基础地址。
+- **找不到答案或分析超时**：检查题图是否下载成功；现场分析需要匹配到题目，上下文重试也可能无法得出答案，请及时前往雨课堂作答。
+- **配置未生效**：在配置界面保存后停止监听再启动；直接编辑 JSON 或修改登录信息后重启应用。不要同时在界面和文本编辑器中修改同一份配置。
+- **邮件发送失败**：先在“提醒通知”页发送测试邮件，核对 SMTP 地址、端口和授权码。SSL 直连和 STARTTLS 是不同连接方式，应按邮箱服务商要求选择。
+- **更新检查失败**：程序检查[本仓库最新 Release](https://github.com/infstellar/RainClassroomAssistant/releases/latest)。尚未发布 Release、缺少 `version.txt` 附件或网络无法访问 GitHub 时会失败，可手动访问 Releases 查看。
+
+日志默认位于 `%USERPROFILE%\AppData\Roaming\RainClassroomAssistant\logs\`：`RainClassroomAssistant.log` 为运行日志，轮转日志保留 7 天；`RainClassroomAssistant_error.log` 为错误日志，轮转日志保留 14 天。日志会记录课程和题目信息，异常详情还可能包含变量值，**上传前请遮盖会话、密钥、邮箱凭据及个人信息**。
+
+如仍无法解决，请到[本仓库 Issues](https://github.com/infstellar/RainClassroomAssistant/issues)反馈，提供软件版本或提交号、Windows/Python 版本（源码运行时）、雨课堂类型、源码或 EXE 运行方式、复现步骤、预期与实际结果，以及脱敏后的相关日志或截图。反馈 AI 问题时补充模型名、协议和错误码即可，不要附带真实密钥或完整配置。
+
+## 版本发布（维护者）
+
+打包发布使用 [GitHub Actions](.github/workflows/python-app.yml)，仅在推送新版本标签（如 `v0.4.3`）时自动执行。普通 `main` 提交不会触发打包，也不提供手动触发入口；删除或强制移动已有标签不会执行打包发布。其他代码检查流程仍按各自规则运行。
+
+1. 在 `main` 上更新 `file_version_info.txt` 中的版本信息（`filevers`、`prodvers`、`FileVersion` 和 `ProductVersion`），提交修改。
+2. 推送 `main`，再为准备发布的提交创建并推送 `v主版本.次版本.修订号` 标签。例如，项目版本更新为 `0.4.3` 后执行：
+
+   ```bash
+   git switch main
+   git push origin main
+   git tag v0.4.3
+   git push origin v0.4.3
+   ```
+
+3. 在仓库 Actions 中查看“Python application”。流程会检查标签提交是否属于 `main` 的历史、标签版本是否与 `FileVersion` 一致，然后构建该标签对应的 Windows EXE。
+4. 构建成功后，自动以该标签发布 Release，附带 `RainClassroomAssistant.exe` 和 `version.txt`，并在发布说明中记录 EXE 的 SHA-256。
 
 ## 屎山问题
 

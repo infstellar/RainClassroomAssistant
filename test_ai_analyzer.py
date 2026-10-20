@@ -117,7 +117,7 @@ def test_config_loading():
     print("\n=== 配置加载测试 ===")
     
     # 检查示例配置文件
-    config_file = "ai_config_example.json"
+    config_file = os.path.join(os.path.dirname(__file__), "config.example.json")
     if os.path.exists(config_file):
         try:
             with open(config_file, 'r', encoding='utf-8') as f:
