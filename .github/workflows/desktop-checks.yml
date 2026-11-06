@@ -6,6 +6,7 @@ on:
     paths:
       - 'desktop/**'
       - '.github/workflows/desktop-*.yml'
+      - '.gitattributes'
   pull_request:
 
 permissions:
