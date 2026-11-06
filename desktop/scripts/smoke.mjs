@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
+import { createRequire } from 'node:module'
 import { _electron } from 'playwright-core'
 
 const root = await mkdtemp(join(tmpdir(), 'rainclass-desktop-smoke-'))
@@ -29,11 +30,14 @@ await writeFile(
   logs.map((entry) => JSON.stringify(entry)).join('\n') + '\n',
 )
 const executable = process.env.RAINCLASSROOM_EXECUTABLE
+// Electron 45 downloads its runtime lazily through this entrypoint.
+// A hard-coded dist path skips that installation on a clean CI runner.
+const electronExecutable =
+  executable || createRequire(import.meta.url)('electron')
 const env = { ...process.env }
 delete env.ELECTRON_RUN_AS_NODE
 const app = await _electron.launch({
-  executablePath:
-    executable || resolve('node_modules/electron/dist/electron.exe'),
+  executablePath: electronExecutable,
   args: [
     ...(executable ? [] : [resolve('.')]),
     `--user-data-dir=${root}`,
