@@ -1,4 +1,5 @@
 import { HelpTip } from './HelpTip'
+import { useAutoSaveConfig } from './useAutoSaveConfig'
 import { useEffect, useMemo, useState } from 'react'
 import {
   Activity,
@@ -20,6 +21,8 @@ import {
   SlidersHorizontal,
   Square,
   WifiOff,
+  X,
+  CircleAlert,
 } from 'lucide-react'
 import type {
   AssistantConfig,
@@ -40,11 +43,17 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [logLevel, setLogLevel] = useState('all')
   const [helpOpen, setHelpOpen] = useState(false)
+  const [startupSupported, setStartupSupported] = useState(false)
   const [controlError, setControlError] = useState('')
-  const [config, setConfig] = useState<AssistantConfig | null>(null)
-  const [saveState, setSaveState] = useState<
-    'idle' | 'saved' | 'error' | 'invalid'
-  >('idle')
+  const {
+    config,
+    loadConfig,
+    updateConfig,
+    saveState,
+    toast,
+    dismissToast,
+    retrySave,
+  } = useAutoSaveConfig(isConfigValid)
   const [emailTestState, setEmailTestState] = useState<
     'idle' | 'sending' | 'sent' | 'error'
   >('idle')
@@ -76,7 +85,8 @@ export default function App() {
     void window.desktop.getRuntimeState().then(setRuntime)
     void window.desktop.getCourses().then(setCourses)
     void window.desktop.getLogs().then(setLogs)
-    void window.desktop.getConfig().then(setConfig)
+    void window.desktop.getConfig().then(loadConfig)
+    void window.desktop.supportsOpenAtLogin().then(setStartupSupported)
     void window.desktop.getUpdateState().then(setUpdate)
     const offRuntime = window.desktop.onRuntimeState((state) => {
       setRuntime(state)
@@ -93,12 +103,12 @@ export default function App() {
       offLogin()
       offUpdate()
     }
-  }, [])
+  }, [loadConfig])
 
   useEffect(() => {
     if (loginUpdate.status !== 'success' || !window.desktop) return
-    void window.desktop.getConfig().then((saved) => setConfig(saved))
-  }, [loginUpdate.status])
+    void window.desktop.getConfig().then(loadConfig)
+  }, [loginUpdate.status, loadConfig])
 
   const filteredLogs = useMemo(
     () =>
@@ -151,8 +161,10 @@ export default function App() {
 
   const updateEmail = (patch: Partial<EmailConfig>) => {
     if (!config) return
-    setConfig({ ...config, email_config: { ...config.email_config, ...patch } })
-    setSaveState('idle')
+    updateConfig({
+      ...config,
+      email_config: { ...config.email_config, ...patch },
+    })
     setEmailTestState('idle')
   }
 
@@ -160,28 +172,26 @@ export default function App() {
     patch: Partial<AssistantConfig['answer_config']['answer_delay']>,
   ) => {
     if (!config) return
-    setConfig({
+    updateConfig({
       ...config,
       answer_config: {
         ...config.answer_config,
         answer_delay: { ...config.answer_config.answer_delay, ...patch },
       },
     })
-    setSaveState('idle')
   }
 
   const updateSignDelay = (
     patch: Partial<AssistantConfig['sign_config']['delay_time']>,
   ) => {
     if (!config) return
-    setConfig({
+    updateConfig({
       ...config,
       sign_config: {
         ...config.sign_config,
         delay_time: { ...config.sign_config.delay_time, ...patch },
       },
     })
-    setSaveState('idle')
   }
 
   const updateAudioType = (
@@ -189,18 +199,42 @@ export default function App() {
     checked: boolean,
   ) => {
     if (!config) return
-    setConfig({
+    updateConfig({
       ...config,
       audio_config: {
         ...config.audio_config,
         audio_type: { ...config.audio_config.audio_type, [key]: checked },
       },
     })
-    setSaveState('idle')
   }
 
   return (
     <div className="app-shell">
+      {toast && (
+        <div
+          className={`save-toast ${toast.kind}`}
+          role={toast.kind === 'error' ? 'alert' : 'status'}
+        >
+          {toast.kind === 'success' ? (
+            <CheckCircle2 size={20} />
+          ) : (
+            <CircleAlert size={20} />
+          )}
+          <span>{toast.message}</span>
+          {saveState === 'error' && (
+            <button className="button" onClick={retrySave}>
+              重试
+            </button>
+          )}
+          <button
+            className="icon-button"
+            aria-label="关闭保存提示"
+            onClick={dismissToast}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -449,6 +483,39 @@ export default function App() {
                   <div className="panel settings-section">
                     <div className="panel-heading">
                       <div>
+                        <h2>启动设置</h2>
+                        <p>控制应用启动及课堂监听行为</p>
+                      </div>
+                      <Settings2 size={16} />
+                    </div>
+                    <SettingToggle
+                      label="开机自启"
+                      description={
+                        startupSupported
+                          ? '登录 Windows 后自动启动应用；便携版请保持程序位置不变'
+                          : '开机自启仅支持打包后的 Windows 程序，开发和测试模式不可用'
+                      }
+                      checked={config.open_at_login}
+                      disabled={!startupSupported}
+                      onChange={(checked) =>
+                        updateConfig({ ...config, open_at_login: checked })
+                      }
+                    />
+                    <SettingToggle
+                      label="启动时自动开始监听"
+                      description="下次启动应用时自动验证登录并开始监听；未登录或会话失效时请先扫码登录，再手动开始监听"
+                      checked={config.auto_start_monitoring}
+                      onChange={(checked) =>
+                        updateConfig({
+                          ...config,
+                          auto_start_monitoring: checked,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="panel settings-section">
+                    <div className="panel-heading">
+                      <div>
                         <h2>账号与平台</h2>
                         <p>
                           {runtime?.userName
@@ -468,7 +535,7 @@ export default function App() {
                       <select
                         value={String(config.region)}
                         onChange={(event) =>
-                          setConfig({
+                          updateConfig({
                             ...config,
                             region: Number(event.target.value),
                           })
@@ -499,11 +566,10 @@ export default function App() {
                         value={sessionDraft}
                         onChange={(event) => {
                           setSessionDraft(event.target.value)
-                          setConfig({
+                          updateConfig({
                             ...config,
                             sessionid: event.target.value,
                           })
-                          setSaveState('idle')
                         }}
                       />
                     </label>
@@ -597,8 +663,7 @@ export default function App() {
                       description="收到课堂题目时使用课件答案或分析缓存"
                       checked={config.auto_answer}
                       onChange={(checked) => {
-                        setConfig({ ...config, auto_answer: checked })
-                        setSaveState('idle')
+                        updateConfig({ ...config, auto_answer: checked })
                       }}
                     />
                     <div
@@ -667,8 +732,7 @@ export default function App() {
                       description="达到阈值后发送相同内容，并对内容启用 60 秒冷却"
                       checked={config.auto_danmu}
                       onChange={(checked) => {
-                        setConfig({ ...config, auto_danmu: checked })
-                        setSaveState('idle')
+                        updateConfig({ ...config, auto_danmu: checked })
                       }}
                     />
                     <div
@@ -689,14 +753,13 @@ export default function App() {
                           min="1"
                           value={config.danmu_config.danmu_limit}
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               danmu_config: {
                                 ...config.danmu_config,
                                 danmu_limit: Number(event.target.value),
                               },
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -715,8 +778,7 @@ export default function App() {
                       description="使用系统语音播报选中的课堂事件"
                       checked={config.audio_on}
                       onChange={(checked) => {
-                        setConfig({ ...config, audio_on: checked })
-                        setSaveState('idle')
+                        updateConfig({ ...config, audio_on: checked })
                       }}
                     />
                     <div
@@ -955,8 +1017,7 @@ export default function App() {
                       description="课件下载后使用视觉模型分析题目"
                       checked={config.enable_ai_analysis}
                       onChange={(checked) => {
-                        setConfig({ ...config, enable_ai_analysis: checked })
-                        setSaveState('idle')
+                        updateConfig({ ...config, enable_ai_analysis: checked })
                       }}
                     />
                     <div
@@ -975,11 +1036,10 @@ export default function App() {
                           aria-label="API 地址"
                           value={config.openai_api_base}
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               openai_api_base: event.target.value,
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -988,11 +1048,10 @@ export default function App() {
                         <input
                           value={config.openai_model}
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               openai_model: event.target.value,
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -1009,11 +1068,10 @@ export default function App() {
                           value={apiKeyDraft}
                           onChange={(event) => {
                             setApiKeyDraft(event.target.value)
-                            setConfig({
+                            updateConfig({
                               ...config,
                               openai_api_key: event.target.value,
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -1030,7 +1088,7 @@ export default function App() {
                           aria-label="接口协议"
                           value={config.ai_analysis_settings.protocol}
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               ai_analysis_settings: {
                                 ...config.ai_analysis_settings,
@@ -1038,7 +1096,6 @@ export default function App() {
                                   .value as typeof config.ai_analysis_settings.protocol,
                               },
                             })
-                            setSaveState('idle')
                           }}
                         >
                           <option value="responses">Responses</option>
@@ -1052,14 +1109,13 @@ export default function App() {
                         description="逐事件接收并校验生成结果"
                         checked={config.ai_analysis_settings.stream}
                         onChange={(stream) => {
-                          setConfig({
+                          updateConfig({
                             ...config,
                             ai_analysis_settings: {
                               ...config.ai_analysis_settings,
                               stream,
                             },
                           })
-                          setSaveState('idle')
                         }}
                       />
                       <label className="field-row">
@@ -1077,14 +1133,13 @@ export default function App() {
                           }
                           value={config.ai_analysis_settings.reasoning_effort}
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               ai_analysis_settings: {
                                 ...config.ai_analysis_settings,
                                 reasoning_effort: event.target.value,
                               },
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -1106,7 +1161,7 @@ export default function App() {
                             'null'
                           }
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               ai_analysis_settings: {
                                 ...config.ai_analysis_settings,
@@ -1116,7 +1171,6 @@ export default function App() {
                                     : event.target.value,
                               },
                             })
-                            setSaveState('idle')
                           }}
                         >
                           <option value="null">不请求摘要</option>
@@ -1143,14 +1197,13 @@ export default function App() {
                           }
                           onChange={(event) => {
                             const value = Number(event.target.value)
-                            setConfig({
+                            updateConfig({
                               ...config,
                               ai_analysis_settings: {
                                 ...config.ai_analysis_settings,
                                 max_output_tokens: value === 0 ? null : value,
                               },
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -1168,14 +1221,13 @@ export default function App() {
                           min="0"
                           value={config.ai_analysis_settings.max_retries}
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               ai_analysis_settings: {
                                 ...config.ai_analysis_settings,
                                 max_retries: Number(event.target.value),
                               },
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -1193,14 +1245,13 @@ export default function App() {
                           step="0.1"
                           value={config.ai_analysis_settings.request_timeout}
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               ai_analysis_settings: {
                                 ...config.ai_analysis_settings,
                                 request_timeout: Number(event.target.value),
                               },
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -1220,7 +1271,7 @@ export default function App() {
                             config.ai_analysis_settings.delay_between_requests
                           }
                           onChange={(event) => {
-                            setConfig({
+                            updateConfig({
                               ...config,
                               ai_analysis_settings: {
                                 ...config.ai_analysis_settings,
@@ -1229,7 +1280,6 @@ export default function App() {
                                 ),
                               },
                             })
-                            setSaveState('idle')
                           }}
                         />
                       </label>
@@ -1237,37 +1287,17 @@ export default function App() {
                   </div>
                   <div className="settings-actions">
                     <span className="save-status">
-                      {saveState === 'saved'
-                        ? '设置已保存'
-                        : saveState === 'invalid'
-                          ? '请补全已启用功能的必填配置'
-                          : saveState === 'error'
-                            ? '保存失败，请检查权限和磁盘状态'
-                            : '保存后应用到后续课堂事件'}
+                      {saveState === 'pending' || saveState === 'saving'
+                        ? '正在自动保存…'
+                        : saveState === 'error' || saveState === 'invalid'
+                          ? '更改尚未保存，请修正配置或重试'
+                          : '修改后自动保存，应用到后续课堂事件'}
                     </span>
-                    <button
-                      className="button primary"
-                      disabled={!window.desktop}
-                      onClick={() => {
-                        if (!window.desktop || !config) return
-                        if (!isConfigValid(config)) {
-                          setSaveState('invalid')
-                          return
-                        }
-                        void window.desktop
-                          .saveConfig(config)
-                          .then((saved) => {
-                            setConfig(saved)
-                            setEmailPasswordDraft('')
-                            setApiKeyDraft('')
-                            setSessionDraft('')
-                            setSaveState('saved')
-                          })
-                          .catch(() => setSaveState('error'))
-                      }}
-                    >
-                      保存设置
-                    </button>
+                    {(saveState === 'error' || saveState === 'invalid') && (
+                      <button className="button" onClick={retrySave}>
+                        重试保存
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -1592,7 +1622,10 @@ export default function App() {
                     message: '平台已切换，请重新获取二维码',
                   })
                   if (config)
-                    setConfig({ ...config, region: Number(event.target.value) })
+                    updateConfig({
+                      ...config,
+                      region: Number(event.target.value),
+                    })
                 }}
               >
                 <option value="0">雨课堂</option>

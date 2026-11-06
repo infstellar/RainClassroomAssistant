@@ -112,6 +112,23 @@ try {
     )
   }
   assert.ok((await page.locator('input,select').count()) >= 42)
+  assert.equal(
+    await page.getByLabel('开机自启', { exact: true }).isEnabled(),
+    false,
+  )
+  await page.getByLabel('启动时自动开始监听', { exact: true }).check()
+  await page.getByRole('status').filter({ hasText: '设置已自动保存' }).waitFor()
+  assert.equal(
+    JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      .auto_start_monitoring,
+    true,
+  )
+  assert.equal(
+    (await page.evaluate(() => window.desktop.getRuntimeState())).listening,
+    false,
+  )
+  await page.getByLabel('启动时自动开始监听', { exact: true }).uncheck()
+  await page.getByRole('status').filter({ hasText: '设置已自动保存' }).waitFor()
   const enabledBeforeHint = await page
     .getByLabel('启用自动答题', { exact: true })
     .isChecked()
@@ -123,8 +140,7 @@ try {
     enabledBeforeHint,
   )
   await page.getByLabel('启用自动答题', { exact: true }).uncheck()
-  await page.getByRole('button', { name: '保存设置', exact: true }).click()
-  await page.getByText('设置已保存', { exact: true }).waitFor()
+  await page.getByRole('status').filter({ hasText: '设置已自动保存' }).waitFor()
   assert.equal(
     (await page.evaluate(() => window.desktop.getConfig())).auto_answer,
     false,
@@ -137,6 +153,64 @@ try {
     path: join(artifacts, 'settings.png'),
     fullPage: true,
   })
+  await page.getByLabel('最大重试次数', { exact: true }).fill('7')
+  await page.getByLabel('最大重试次数', { exact: true }).fill('8')
+  await page.getByRole('button', { name: '运行概览', exact: true }).click()
+  await page.getByRole('status').filter({ hasText: '设置已自动保存' }).waitFor()
+  assert.equal(
+    JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      .ai_analysis_settings.max_retries,
+    8,
+  )
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByLabel('启用 AI 分析', { exact: true }).check()
+  await page.getByRole('alert').filter({ hasText: '请补全' }).waitFor()
+  assert.equal(
+    JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))
+      .enable_ai_analysis,
+    false,
+  )
+  await page.getByLabel('启用 AI 分析', { exact: true }).uncheck()
+  await page.getByRole('status').filter({ hasText: '设置已自动保存' }).waitFor()
+
+  // Simulate a failed write, retry, then edit during a slow save.
+  await app.evaluate(({ ipcMain }) => {
+    globalThis.smokeSaves = []
+    globalThis.smokeSaveFails = true
+    ipcMain.removeHandler('config:save')
+    ipcMain.handle('config:save', async (_event, config) => {
+      if (globalThis.smokeSaveFails) throw new Error('simulated disk failure')
+      globalThis.smokeSaves.push(config.ai_analysis_settings.max_retries)
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      return config
+    })
+  })
+  await page.getByLabel('最大重试次数', { exact: true }).fill('6')
+  await page
+    .getByRole('alert')
+    .filter({ hasText: '检查权限和磁盘状态' })
+    .waitFor()
+  assert.equal(
+    await page.getByLabel('最大重试次数', { exact: true }).inputValue(),
+    '6',
+  )
+  await app.evaluate(() => {
+    globalThis.smokeSaveFails = false
+  })
+  await page.getByRole('button', { name: '重试', exact: true }).click()
+  // Wait until the retry is in flight before making the next edit.
+  const deadline = Date.now() + 10000
+  while (!(await app.evaluate(() => globalThis.smokeSaves.length))) {
+    assert.ok(Date.now() < deadline, 'retry did not start')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  await page.getByLabel('最大重试次数', { exact: true }).fill('5')
+  await page.getByRole('status').filter({ hasText: '设置已自动保存' }).waitFor()
+  assert.equal(
+    await page.getByLabel('最大重试次数', { exact: true }).inputValue(),
+    '5',
+  )
+  assert.deepEqual(await app.evaluate(() => globalThis.smokeSaves), [6, 5])
   await page.getByRole('button', { name: /运行日志/ }).click()
   await page.getByLabel('日志级别', { exact: true }).selectOption('ERROR')
   await page.getByText('测试错误', { exact: false }).waitFor()
@@ -173,7 +247,9 @@ try {
         '42 settings fields',
         '18px text and responsive layout',
         'hover/focus help and Escape dismissal',
-        'config persistence',
+        'automatic config persistence and navigation',
+        'save success, validation and failure toasts',
+        'retry and in-flight edit preservation',
         'log level and text filtering',
         'QR refresh',
       ],

@@ -15,6 +15,23 @@ test('fills missing nested defaults while keeping configured values', () => {
   assert.equal(config.ai_analysis_settings.request_timeout, 90)
   assert.equal(config.ai_analysis_settings.reasoning_summary, null)
   assert.equal(config.ai_analysis_settings.max_retries, 3)
+  assert.equal(config.open_at_login, false)
+  assert.equal(config.auto_start_monitoring, false)
+})
+
+test('preserves startup preferences and rejects non-boolean legacy values', () => {
+  const config = normalizeConfig({
+    open_at_login: true,
+    auto_start_monitoring: true,
+  })
+  assert.equal(config.open_at_login, true)
+  assert.equal(config.auto_start_monitoring, true)
+  const malformed = normalizeConfig({
+    open_at_login: 'true',
+    auto_start_monitoring: 1,
+  })
+  assert.equal(malformed.open_at_login, false)
+  assert.equal(malformed.auto_start_monitoring, false)
 })
 
 test('ignores unknown fields and does not mutate shared defaults', () => {

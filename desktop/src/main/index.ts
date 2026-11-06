@@ -18,6 +18,11 @@ import { createRequire } from 'node:module'
 import { UpdateController } from './updater'
 import { copyLegacyDirectory } from './migration'
 import { loginImageMime } from './login-image'
+import {
+  initializeMonitoring,
+  loginItemOptions,
+  setOpenAtLogin,
+} from './startup'
 
 let mainWindow: BrowserWindow | null = null
 let loginSocket: WebSocket | null = null
@@ -191,6 +196,11 @@ ipcMain.handle('runtime:start', () => runtime.start())
 ipcMain.handle('runtime:stop', () => runtime.stop())
 ipcMain.handle('logs:get-all', () => logger.list())
 ipcMain.handle('config:get', () => readConfig())
+const supportsOpenAtLogin = () =>
+  process.platform === 'win32' && app.isPackaged && !isolatedData
+const startupExecutable = () =>
+  process.env.PORTABLE_EXECUTABLE_FILE || process.execPath
+ipcMain.handle('startup:supported', supportsOpenAtLogin)
 ipcMain.handle('config:save', async (_event, config: AssistantConfig) => {
   const before = await readConfig()
   const normalized = normalizeConfig(config)
@@ -198,7 +208,33 @@ ipcMain.handle('config:save', async (_event, config: AssistantConfig) => {
     before.sessionid !== normalized.sessionid ||
     String(before.region) !== String(normalized.region)
   if (accountChanged) await runtime.stop()
-  const saved = await writeConfig(normalized)
+  const startupChanged = before.open_at_login !== normalized.open_at_login
+  if (startupChanged && !supportsOpenAtLogin()) {
+    throw new Error('开机自启仅支持打包后的 Windows 程序')
+  }
+  const executable = startupExecutable()
+  const previousStartup = startupChanged
+    ? app.getLoginItemSettings(loginItemOptions(executable)).openAtLogin
+    : false
+  let saved: AssistantConfig
+  try {
+    if (startupChanged)
+      setOpenAtLogin(app, executable, normalized.open_at_login)
+    saved = await writeConfig(normalized)
+  } catch (error) {
+    if (startupChanged) {
+      try {
+        setOpenAtLogin(app, executable, previousStartup)
+      } catch {
+        await logger.write(
+          'ERROR',
+          '启动设置',
+          '恢复开机自启设置失败，请检查 Windows 启动应用设置',
+        )
+      }
+    }
+    throw error
+  }
   if (accountChanged) await runtime.validateSession()
   return saved
 })
@@ -367,8 +403,10 @@ if (hasInstanceLock)
       if (!isolatedData) await migrateUserFiles()
       await logger.load()
       createWindow()
-      void runtime
-        .validateSession()
+      void readConfig()
+        .then((config) =>
+          initializeMonitoring(config.auto_start_monitoring, runtime),
+        )
         .catch((error) =>
           logger.write(
             'ERROR',

@@ -76,6 +76,8 @@ export interface AiAnalysisSettings {
 }
 
 export interface AssistantConfig {
+  open_at_login: boolean
+  auto_start_monitoring: boolean
   sessionid: string
   region: string | number
   auto_danmu: boolean
@@ -105,6 +107,7 @@ export interface AssistantConfig {
 }
 
 export interface DesktopBridge {
+  supportsOpenAtLogin(): Promise<boolean>
   getRuntimeState(): Promise<RuntimeState>
   getCourses(): Promise<Course[]>
   getLogs(): Promise<LogEntry[]>

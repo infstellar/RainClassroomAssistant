@@ -1,4 +1,6 @@
 {
+  "open_at_login": false,
+  "auto_start_monitoring": false,
   "sessionid": "",
   "region": "1",
   "auto_danmu": false,

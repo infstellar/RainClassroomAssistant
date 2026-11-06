@@ -1,6 +1,6 @@
 {
   "name": "rainclassroom-desktop",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "雨课堂桌面助理",
   "author": "infstellar",
   "private": true,
@@ -25,7 +25,7 @@
     "test:migration": "node --experimental-strip-types --test src/main/migration.test.ts",
     "test:slides": "node --experimental-strip-types --test src/main/slides.test.ts",
     "test:network": "node --experimental-strip-types --test src/main/network.test.ts",
-    "test:runtime": "node --experimental-transform-types --test src/main/runtime.test.ts src/main/logger.test.ts",
+    "test:runtime": "node --experimental-transform-types --test src/main/runtime.test.ts src/main/logger.test.ts src/main/startup.test.ts",
     "test:smoke": "node scripts/smoke.mjs",
     "format": "prettier --write src scripts electron.vite.config.ts vite.preview.config.ts package.json README.md",
     "format:check": "prettier --check src scripts electron.vite.config.ts vite.preview.config.ts package.json README.md",

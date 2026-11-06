@@ -1,6 +1,8 @@
 import type { AssistantConfig } from './contract'
 
 export const defaultConfig: AssistantConfig = {
+  open_at_login: false,
+  auto_start_monitoring: false,
   sessionid: '',
   region: '1',
   auto_danmu: false,

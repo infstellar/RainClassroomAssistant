@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { DesktopBridge } from '../shared/contract'
 
 const desktopBridge: DesktopBridge = {
+  supportsOpenAtLogin: () => ipcRenderer.invoke('startup:supported'),
   getRuntimeState: () => ipcRenderer.invoke('runtime:get-state'),
   getCourses: () => ipcRenderer.invoke('runtime:get-courses'),
   getLogs: () => ipcRenderer.invoke('logs:get-all'),
