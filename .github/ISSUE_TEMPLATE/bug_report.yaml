@@ -42,9 +42,8 @@ body:
     attributes:
       label: Version
       description: |
-        请提供当前使用的软件版本号，如 0.4.1
-        版本号可在软件初始化时的日志中找到，也可在系统中查看软件属性
-      placeholder: ex. 0.4.1
+        请提供左侧桌面服务卡片显示的版本号、Windows 版本，以及安装版或便携版
+      placeholder: 例如 0.5.0 / Windows 11 / 安装版
     validations:
       required: true
   - type: textarea
@@ -54,6 +53,14 @@ body:
       description: |
         可上传屏幕截图或录制以帮助解释你的问题
         注意保护个人隐私信息
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: 运行日志
+      description: 从“运行日志”页面复制相关内容，或通过“打开日志目录”找到 JSONL 文件。分享前移除个人信息、会话和密钥。
+      render: text
     validations:
       required: false
   - type: textarea

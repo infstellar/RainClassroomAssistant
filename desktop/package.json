@@ -1,0 +1,114 @@
+{
+  "name": "rainclassroom-desktop",
+  "version": "0.5.0",
+  "description": "雨课堂桌面助理",
+  "author": "infstellar",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.7.0"
+  },
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit -p tsconfig.json && electron-vite build",
+    "dist": "npm run build && electron-builder --win --x64 --publish never",
+    "test:config": "node --experimental-strip-types --test src/shared/config.test.ts",
+    "test:answers": "node --experimental-strip-types --test src/main/answers.test.ts",
+    "test:answer-cache": "node --experimental-strip-types --test src/main/answer-cache.test.ts src/main/cache-store.test.ts",
+    "test:presentation": "node --experimental-strip-types --test src/main/presentation.test.ts",
+    "test:ai": "node --experimental-strip-types --test src/main/ai-analyzer.test.ts",
+    "test:notifier": "node --experimental-strip-types --test src/main/notifier.test.ts",
+    "test:danmu": "node --experimental-strip-types --test src/main/danmu.test.ts",
+    "test:signing": "node --experimental-strip-types --test src/main/signing.test.ts",
+    "test:login-image": "node --experimental-strip-types --test src/main/login-image.test.ts",
+    "test:migration": "node --experimental-strip-types --test src/main/migration.test.ts",
+    "test:slides": "node --experimental-strip-types --test src/main/slides.test.ts",
+    "test:network": "node --experimental-strip-types --test src/main/network.test.ts",
+    "test:runtime": "node --experimental-transform-types --test src/main/runtime.test.ts src/main/logger.test.ts",
+    "test:smoke": "node scripts/smoke.mjs",
+    "format": "prettier --write src scripts electron.vite.config.ts vite.preview.config.ts package.json README.md",
+    "format:check": "prettier --check src scripts electron.vite.config.ts vite.preview.config.ts package.json README.md",
+    "test": "npm run test:config && npm run test:answers && npm run test:answer-cache && npm run test:presentation && npm run test:ai && npm run test:notifier && npm run test:danmu && npm run test:signing && npm run test:login-image && npm run test:migration && npm run test:slides && npm run test:network && npm run test:runtime && npm run test:updater",
+    "preview": "electron-vite preview",
+    "preview:web": "vite --config vite.preview.config.ts --host 127.0.0.1",
+    "test:updater": "node --experimental-strip-types --test src/main/updater.test.ts scripts/verify-release.test.mjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "lucide-react": "^0.468.0",
+    "nodemailer": "^10.3.1",
+    "pdf-lib": "^1.17.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ws": "^8.18.0"
+  },
+  "build": {
+    "appId": "cn.rainclassroom.assistant",
+    "productName": "摸鱼课堂",
+    "electronDownload": {
+      "checksums": {
+        "electron-v45.2.3-win32-x64.zip": "489cd061908e697394b004298bf5ffd345c935d10e8ca197ba819f019ab2dec0"
+      }
+    },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/favicon.ico",
+        "to": "favicon.ico"
+      }
+    ],
+    "disableDefaultIgnoredFiles": true,
+    "asar": true,
+    "win": {
+      "icon": "resources/favicon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "RainClassroomAssistant-Setup-${version}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "RainClassroomAssistant.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "infstellar",
+        "repo": "RainClassroomAssistant",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^3.0.0",
+    "js-yaml": "^4.3.2",
+    "playwright-core": "^1.64.1",
+    "prettier": "^3.9.10",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
+  }
+}

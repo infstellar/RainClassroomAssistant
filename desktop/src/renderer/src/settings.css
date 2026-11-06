@@ -1,0 +1,463 @@
+.settings-layout {
+  display: grid;
+  gap: 13px;
+  max-width: 920px;
+}
+.settings-section {
+  padding: 18px 19px;
+}
+.settings-section > .panel-heading {
+  align-items: center;
+  padding-bottom: 10px;
+}
+.settings-section > .panel-heading > svg {
+  color: #8c989e;
+}
+.setting-toggle {
+  min-height: 61px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  border-top: 1px solid #eff1f2;
+}
+.setting-toggle > span {
+  display: grid;
+  gap: 5px;
+}
+.setting-toggle strong {
+  font-size: 18px;
+  color: #455159;
+  font-weight: 600;
+}
+.setting-toggle small {
+  font-size: 18px;
+  color: #98a2a8;
+}
+.setting-toggle input {
+  appearance: none;
+  width: 32px;
+  height: 18px;
+  background: #d8dfe2;
+  border-radius: 12px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.16s ease;
+  flex-shrink: 0;
+}
+.setting-toggle input:checked {
+  background: #38936b;
+}
+.setting-toggle input:before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  left: 2px;
+  top: 2px;
+  transition: transform 0.16s ease;
+  box-shadow: 0 1px 2px #0002;
+}
+.setting-toggle input:checked:before {
+  transform: translateX(14px);
+}
+.setting-toggle input:focus-visible {
+  outline: 2px solid #6fae91;
+  outline-offset: 2px;
+}
+.field-row {
+  min-height: 49px;
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  align-items: center;
+  gap: 20px;
+  border-top: 1px solid #eff1f2;
+}
+.field-row > span {
+  font-size: 18px;
+  color: #68757c;
+}
+.field-row input {
+  height: 31px;
+  min-width: 0;
+  border: 1px solid #e3e8ea;
+  border-radius: 4px;
+  padding: 0 9px;
+  color: #47535a;
+  background: #fff;
+  font-size: 18px;
+  outline: none;
+}
+.field-row input:focus {
+  border-color: #6eaa8c;
+  box-shadow: 0 0 0 2px #e8f4ed;
+}
+.field-row input::placeholder {
+  color: #a4adb2;
+}
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 1px 8px;
+}
+.save-status {
+  font-size: 18px;
+  color: #89959b;
+}
+.settings-unavailable {
+  min-height: 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+}
+.settings-unavailable strong {
+  font-size: 18px;
+  color: #536168;
+}
+.settings-unavailable > span {
+  font-size: 18px;
+  color: #929da3;
+}
+.course-list {
+  min-height: 160px;
+  padding: 14px 2px;
+}
+.course-row {
+  min-height: 54px;
+  border-bottom: 1px solid #eff1f2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.course-marker {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: #eef5f1;
+  color: #5c9879;
+}
+.course-row > span:nth-child(2) {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+}
+.course-row strong {
+  font-size: 18px;
+  color: #4b585f;
+}
+.course-row small {
+  font-size: 18px;
+  color: #9ba5aa;
+}
+.course-live {
+  font-size: 18px;
+  color: #52866d;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.course-live i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #53a978;
+}
+.recent-log-list {
+  padding: 9px 0 5px;
+}
+.recent-log-row {
+  display: grid;
+  grid-template-columns: 58px 110px minmax(0, 1fr) 135px;
+  gap: 8px;
+  align-items: center;
+  min-height: 31px;
+  border-top: 1px solid #f0f2f3;
+  font-size: 18px;
+  color: #66727a;
+}
+.recent-log-source {
+  color: #89949a;
+}
+.recent-log-row time {
+  text-align: right;
+  color: #a2aaaf;
+  font-size: 18px;
+}
+.field-row select {
+  height: 31px;
+  min-width: 0;
+  border: 1px solid #e3e8ea;
+  border-radius: 4px;
+  padding: 0 9px;
+  color: #47535a;
+  background: #fff;
+  font-size: 18px;
+  outline: none;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: #202a2e66;
+  display: grid;
+  place-items: center;
+  z-index: 10;
+  padding: 20px;
+}
+.login-dialog {
+  width: 390px;
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px 22px;
+  box-shadow: 0 16px 50px #15222230;
+}
+.login-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.login-dialog-head h2 {
+  font-size: 18px;
+  margin: 0;
+  color: #303b42;
+}
+.login-dialog-head p {
+  font-size: 18px;
+  color: #929da3;
+  margin: 5px 0 0;
+}
+.login-dialog .field-row {
+  grid-template-columns: 85px 1fr;
+}
+.qr-frame {
+  height: 230px;
+  display: grid;
+  place-items: center;
+  margin: 12px 0;
+  background: #f7f9f8;
+  border: 1px solid #edf0ef;
+  border-radius: 5px;
+}
+.qr-frame img {
+  width: 210px;
+  height: 210px;
+  object-fit: contain;
+}
+.qr-placeholder {
+  display: grid;
+  justify-items: center;
+  gap: 11px;
+  color: #8c9b93;
+  font-size: 18px;
+}
+.login-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 27px;
+  font-size: 18px;
+  color: #75827a;
+}
+.login-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.settings-fields.disabled {
+  opacity: 0.48;
+  pointer-events: none;
+}
+.setting-toggle.disabled {
+  opacity: 0.48;
+}
+.setting-toggle.disabled input {
+  cursor: not-allowed;
+}
+.email-test-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #eff1f2;
+}
+.email-test-row .save-status {
+  min-height: 14px;
+}
+
+.setting-toggle small,
+.save-status,
+.settings-unavailable > span,
+.course-row small,
+.recent-log-row time,
+.login-dialog-head p {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.field-row {
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 70px;
+  padding: 12px 0;
+  gap: 24px;
+}
+.field-row > span {
+  line-height: 1.6;
+}
+.field-row input,
+.field-row select {
+  height: 46px;
+  width: 100%;
+}
+.setting-toggle {
+  min-height: 88px;
+  padding: 14px 0;
+}
+.setting-toggle strong {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.setting-toggle input {
+  width: 44px;
+  height: 26px;
+}
+.setting-toggle input:before {
+  width: 22px;
+  height: 22px;
+}
+.setting-toggle input:checked:before {
+  transform: translateX(18px);
+}
+.settings-layout {
+  max-width: 1100px;
+  gap: 20px;
+}
+.settings-section {
+  padding: 24px;
+}
+.settings-fields.disabled {
+  pointer-events: auto;
+}
+.settings-fields.disabled input,
+.settings-fields.disabled select {
+  pointer-events: none;
+}
+.recent-log-row {
+  grid-template-columns: 95px 120px minmax(0, 1fr) 180px;
+  min-height: 54px;
+}
+.recent-log-row > span:nth-child(3) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.login-dialog {
+  width: min(560px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+}
+.login-dialog-head h2 {
+  font-size: 24px;
+}
+.login-dialog .field-row {
+  grid-template-columns: 130px minmax(0, 1fr);
+}
+.qr-frame {
+  height: 280px;
+}
+.qr-frame img {
+  width: 250px;
+  height: 250px;
+}
+.login-dialog-actions {
+  flex-wrap: wrap;
+}
+.help-tip {
+  display: inline-flex;
+  position: relative;
+  vertical-align: middle;
+  margin-left: 8px;
+  font-weight: 400;
+}
+.help-tip-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: #557b6b;
+  cursor: help;
+  border-radius: 50%;
+}
+.help-tip-trigger:focus-visible {
+  outline: 2px solid #27845e;
+  outline-offset: 2px;
+}
+.help-tip-content {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: 320px;
+  max-width: calc(100vw - 48px);
+  padding: 14px 16px;
+  background: #243e33;
+  color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px #15222230;
+  font-size: 14px;
+  line-height: 1.7;
+  text-align: left;
+  white-space: normal;
+}
+.help-tip-content:before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+.help-tip:not(.dismissed):hover .help-tip-content,
+.help-tip:not(.dismissed):focus-within .help-tip-content {
+  display: block;
+}
+@media (max-width: 1100px) {
+  .recent-log-row {
+    grid-template-columns: 95px minmax(0, 1fr);
+    padding: 12px 0;
+  }
+  .recent-log-row time {
+    text-align: left;
+  }
+}
+@media (max-width: 900px) {
+  .field-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .settings-actions,
+  .email-test-row {
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+}
+
+/* Keep explanations above their trigger so they stay visible near the window bottom. */
+.help-tip-content {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.help-tip-content:before {
+  top: auto;
+  bottom: -8px;
+}

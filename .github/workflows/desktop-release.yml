@@ -1,0 +1,97 @@
+name: TypeScript desktop release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.created && !github.event.deleted
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tagged commit and main history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if (-not ($env:RELEASE_TAG -match '^v\d+\.\d+\.\d+$')) { throw 'Release tags must use vMAJOR.MINOR.PATCH.' }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Release tags must point to a commit on origin/main.' }
+          $package = Get-Content desktop/package.json -Raw | ConvertFrom-Json
+          if ($env:RELEASE_TAG -ne "v$($package.version)") { throw "Tag does not match desktop/package.json version $($package.version)." }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Check formatting
+        working-directory: desktop
+        run: npm run format:check
+
+      - name: Run tests
+        working-directory: desktop
+        run: npm test
+
+      - name: Build Windows installer and update metadata
+        working-directory: desktop
+        run: npm run dist
+
+      - name: Smoke-test the packaged desktop
+        working-directory: desktop
+        env:
+          RAINCLASSROOM_EXECUTABLE: ${{ github.workspace }}\desktop\release\win-unpacked\摸鱼课堂.exe
+        run: npm run test:smoke
+
+      - name: Verify update metadata and write checksums
+        working-directory: desktop
+        run: node scripts/verify-release.mjs
+
+      - name: Save release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ github.ref_name }}
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.blockmap
+            desktop/release/latest.yml
+            desktop/release/version.txt
+            desktop/release/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish complete GitHub release
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/publish-release.mjs
+
+      - name: Save smoke screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-smoke-screenshots
+          path: desktop/test-results/*.png
+          if-no-files-found: ignore

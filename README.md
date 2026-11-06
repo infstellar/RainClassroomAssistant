@@ -1,153 +1,78 @@
 # RainClassroomAssistant
-## 原库https://github.com/travellerse/RainClassroomAssistant
-## 原库https://github.com/TrickyDeath/RainClassroomAssitant
 
-原库看起来摆了。
+基于 Electron、React 和严格 TypeScript 的雨课堂桌面助手。当前桌面应用源码位于 [`desktop/`](desktop/)；早期 Python 实现仅保留作迁移参考，不再作为发布入口。
 
-添加了LLM自动回答问题的功能。
+## 获取与启动
 
-## 已实现功能
- - 自动签到
- - 自动答题（仅限于上课过程中发布的选择题、多选题、填空题）
- - 自动发弹幕（一定时间内收到一定数量的弹幕后，自动跟风发送相同内容的弹幕）
- - 点名、收到题目等情况下的语音提醒
- - 自动答题情况提醒可通过邮箱发送
- - 多线程支持（此脚本支持在有多个正在上课课程的情况下使用）
- - 简洁美观的UI
- - 课堂ppt下载
- - LLM问题回答
+从[最新 Release](https://github.com/infstellar/RainClassroomAssistant/releases/latest)下载 Windows Setup 安装版，或下载便携版 `RainClassroomAssistant.exe`。安装版启动 5 秒后自动检查更新，运行期间每 4 小时复查，也可点击右上角“检查更新”。新版本在后台下载，完成后可点击“重启并安装”，或在正常退出时自动安装。便携版需要从 Release 手动下载新版本替换；界面提供“版本下载”入口。
 
-## 首次登录与使用
+首次启动后，在设置中选择雨课堂平台并扫码登录。连接账号后启动监听，应用会查看进行中的课堂，并按设置加入课堂、处理题目和弹幕。雨课堂仍需在浏览器或官方客户端保持打开；自动答案和 AI 分析需要自行核验。
 
-1. 启动程序后，在登录窗口选择与你的账号对应的平台：雨课堂、荷塘雨课堂、长江雨课堂或黄河雨课堂，再使用微信扫码登录。默认平台为荷塘雨课堂；登录过期时可点击主窗口的“重新登录”。
-2. **程序完成登录后会自动开始监听，且默认开启自动答题。** 首次使用建议先点击“停止监听”，再点击“配置”检查各项设置。
-3. 配置窗口分为“课堂自动化”“提醒通知”“AI 分析”“登录与平台”四页。保存设置后，已在运行的课程任务需要停止监听再重新启动；修改登录信息或直接编辑 `config.json` 后，请重启应用。
-4. 点击“启动”恢复监听。程序会检测正在上课的课程，并进行签到、下载课件及已启用的自动操作；没有正在进行的课程时会继续等待。需要暂停时点击“停止监听”。
-5. **本程序不累计雨课堂在线时长，仍需自行打开雨课堂。** 自动答题针对上课过程中发布的题目，不包含课后作业或考试；AI 答案可能出错，分析失败、没有可用答案或超过答题时限时需要自行处理。
+设置页面管理平台、自动签到、自动答题、弹幕跟随、语音提醒、邮件通知和 AI 分析。修改配置后点“保存设置”；运行中的课堂使用更新后的配置时，停止并重新启动监听。
 
-### 默认设置
+## 功能
 
-| 功能 | 默认行为 | 调整位置 |
-| --- | --- | --- |
-| 自动签到 | 监听到课程后执行，带随机延迟 | 配置 → 课堂自动化 → 自动签到 |
-| 自动答题 | 开启，使用默认延迟策略 | 配置 → 课堂自动化 → 自动答题 |
-| 自动弹幕 | 关闭；启用后默认阈值为每分钟 5 条相同弹幕 | 配置 → 课堂自动化 → 自动弹幕 |
-| 语音提醒 | 开启，具体提醒类型可单独调整 | 配置 → 提醒通知 |
-| AI 分析 | 关闭，需填写密钥、地址和模型后启用 | 配置 → AI 分析 |
-| 邮件通知 | 关闭，需填写 SMTP 配置后启用 | 配置 → 提醒通知 |
+- 扫码登录四个雨课堂平台，恢复已保存会话并轮询进行中的课程。
+- 按配置延迟加入课堂，接收课件、题目、点名和弹幕事件。
+- 下载课件图片并生成 PDF；缓存课程答案并支持 AI 视觉分析。
+- AI 答案不完整时逐步加入同一课件的前置页重试，现场答题也可下载题图和上下文即时分析。
+- 按重复弹幕阈值跟随发送，按事件类别使用系统语音提醒，并通过 SMTP 发送答题状态邮件。
+- 按级别筛选和搜索运行日志、查看近期事件、检测版本更新。
 
-完整字段见 [主配置示例](config.example.json)，详细配置方法见 [配置指南](CONFIG_SETUP_GUIDE.md)。已有 `config.json` 时请修改相应字段，不要直接用示例覆盖登录信息和其他设置。
+## 数据与隐私
 
-## 项目介绍
+桌面应用将配置、日志、课件、题图和答案缓存保存在 Electron 用户数据目录。可在设置页管理配置，使用“打开日志目录”定位日志。首次运行会把可找到的旧版配置、`ai_answers_cache/` 和 `downloads/` 复制到新位置，原数据保留。
 
-突然多了几个stars，写一下项目介绍好了（）
+配置文件以明文保存 `sessionid`、AI API 密钥和邮箱凭据。不要分享配置文件或未脱敏日志。启用 AI 后，题目图片及必要的前置课件页会发送到所配置的模型服务商；请确认有权提供这些内容，并自行评估服务商的数据处理和 API 费用。
 
-### 基本功能
+日志以 JSONL 顺序写入，保留多行消息结构、自动隐藏常见凭据，并按 10 MB 轮转。界面显示最近 500 条事件，也能读取旧版文本日志。答案缓存使用原子写入；课件题目签名变化时保留旧缓存备份并重新分析。
 
-基本功能跟https://github.com/travellerse/RainClassroomAssistant 的项目基本一致，额外修复了一些下载失败、数据类型未验证的问题。
+## 开发
 
-### LLM回答功能
+需要 Node.js 22。Windows 开发命令：
 
-- 参数配置：点击主窗口“配置”，在“AI 分析”页填写 API 密钥、地址、模型及请求参数并启用分析，也可以编辑项目目录下的 `config.json`。完整主配置示例见 [config.example.json](config.example.json)，界面配置说明见 [配置指南](CONFIG_SETUP_GUIDE.md#在应用设置中配置)。
-- 接口要求：模型需要支持图片输入，服务商需要支持所选协议。默认使用 `responses`，也可改为 `chat_completions`；`openai_api_base` 填 API 基础地址（例如 `https://api.openai.com/v1`），不要填写完整的 `/responses` 或 `/chat/completions` 请求地址。模型名和推理参数以服务商实际支持情况为准。
-
-> 已移除 `ai_config.json` 的读取和覆盖机制。旧用户如仅在该文件保存过 AI 参数，请先将其中的 AI 字段合并到 `config.json`，再删除旧文件。程序会为主配置补齐缺少的默认设置，修改后重启程序生效。
-
-1. 课件图片下载完成后，程序识别其中的题目页，逐题调用 AI，并缓存可用答案。
-2. 实际答题时会尝试使用缓存；启用 AI 后，如果仍没有答案，会尝试匹配当前题目及所属 PPT，下载题图进行现场分析。现场分析依赖可用的题图及题目匹配信息，不保证每次都能触发成功。
-3. 当 AI 明确返回“上下文不足”时，批量分析和现场分析都支持逐步加入同一 PPT 中目标题页之前的页面重试，目标图片总数依次为 3、5、7、9，最多扩展 4 轮；可用前置页面不足时实际发送数量会更少。
-4. API 错误、未识别到答案或上下文重试耗尽时，不会将失败结果作为有效答案提交。请留意提醒并及时人工作答。详见 [AI 功能说明](AI_ANALYSIS_README.md)。
-
-### 答案缓存与人工修改
-
-缓存保存在启动工作目录下的 `ai_answers_cache/课程名_PPT标题.json`，课程名和标题中的非法文件名字符会被替换。下载文件默认位于 `downloads/`，现场分析的题图位于 `ai_answers_cache/_live_images/`。从源码运行时，建议在项目根目录启动，以便定位这些文件。
-
-当前缓存包含 `metadata`、`answers` 和 `manual_answers`。例如下面是一份简化的完整缓存，实际编辑时请保留程序生成的其他元数据和题目条目：
-
-```json
-{
-  "metadata": {
-    "lesson_name": "示例课程",
-    "presentation_title": "第一章",
-    "version": "2.0"
-  },
-  "answers": {
-    "3": ["A"]
-  },
-  "manual_answers": {
-    "3": ["B"],
-    "5": ["A", "C"],
-    "8": ["8", "1152"]
-  }
-}
+```powershell
+cd desktop
+npm ci
+npm run dev
 ```
 
-键名是缓存中的幻灯片 `index`，应沿用已有条目，不要自行按查看器页码重新编号。`answers` 保存 AI 答案，**非空的 `manual_answers` 优先于同一题的 AI 答案**；上例中索引 `3` 最终使用 `B`，`5` 为多选，`8` 为按空格顺序填写的填空答案。空数组 `[]` 表示未填写人工答案，不会清除已有 AI 答案。
+运行单元测试和严格 TypeScript 检查：
 
-人工修改保存后，后续读取缓存时生效，无需重启；已经提交的答案不会改变，也不会自动重新提交。请在题目发布前完成修改。旧的纯答案字典格式仍可读取。
-
-### 邮件通知配置
-
-程序会在配置文件中自动补齐 `email_config`。如需让所有“自动答题情况提醒”（包括自动回答成功/失败、没有找到答案等）同时发送邮件，可点击“配置”，在“提醒通知”页配置并发送测试邮件，也可以修改项目目录下 `config.json` 的 `email_config` 字段：
-
-```json
-{
-  "email_config": {
-    "enabled": true,
-    "smtp_server": "smtp.example.com",
-    "smtp_port": 465,
-    "username": "sender@example.com",
-    "password": "邮箱授权码或密码",
-    "sender": "sender@example.com",
-    "recipient": "receiver@example.com",
-    "subject": "雨课堂助手通知",
-    "use_ssl": true,
-    "starttls": true,
-    "timeout": 10
-  }
-}
+```powershell
+npm test
+npm run build
+npm run test:smoke
 ```
 
-多数邮箱服务需要使用“授权码”而不是登录密码。
+在 Windows 本地生成安装版和便携版：
 
-## 数据、隐私与 API 费用
+```powershell
+npm run dist
+```
 
-- `config.json` 以明文保存登录会话 `sessionid`、AI API 密钥和邮箱凭据。请勿提交到仓库、上传到 Issue 或发送给他人；即使密码在配置界面中隐藏，文件本身也没有加密。
-- 启用 AI 后，题目图片会发送到你配置的 API 服务商；上下文重试还会发送同一 PPT 中的前置页面。使用前请确认有权向该服务商提供相关课件内容，并了解其数据处理规则。关闭 AI 后不进行 AI 分析请求。
-- API 费用和额度由服务商计算。逐题分析、现场分析及上下文重试都可能增加请求与图片/token 用量，缓存不能保证完全避免重复请求。
-- 开启邮件通知后，答题提醒内容会通过配置的 SMTP 服务发送到收件邮箱。课件、题图、答案和日志也会保存在本机，分享前请检查个人及课程信息。
-- 本项目非雨课堂官方工具，请遵守学校、课程和平台的使用要求；自动操作与 AI 答案需要自行核验。
+## 发布
 
-## 常见问题与反馈
+GitHub Actions 的 `TypeScript desktop release` 工作流只响应形如 `vMAJOR.MINOR.PATCH` 的新标签。标签必须属于 `main` 历史，且版本号必须与 `desktop/package.json` 相同。工作流运行测试、严格构建、Windows 打包，并验证安装包、便携包、更新元数据、兼容版本文件和 SHA-256 后创建 Release。
 
-- **登录失败或看不到课程**：先确认登录窗口的平台选择正确、会话未过期，且课程正在上课；必要时重新扫码登录。
-- **AI 没有工作**：检查“AI 分析”是否启用、密钥是否有效、模型是否支持图片及所选协议，并查看日志中的接口错误。不要将网页聊天地址填为 API 基础地址。
-- **找不到答案或分析超时**：检查题图是否下载成功；现场分析需要匹配到题目，上下文重试也可能无法得出答案，请及时前往雨课堂作答。
-- **配置未生效**：在配置界面保存后停止监听再启动；直接编辑 JSON 或修改登录信息后重启应用。不要同时在界面和文本编辑器中修改同一份配置。
-- **邮件发送失败**：先在“提醒通知”页发送测试邮件，核对 SMTP 地址、端口和授权码。SSL 直连和 STARTTLS 是不同连接方式，应按邮箱服务商要求选择。
-- **更新检查失败**：程序检查[本仓库最新 Release](https://github.com/infstellar/RainClassroomAssistant/releases/latest)。尚未发布 Release、缺少 `version.txt` 附件或网络无法访问 GitHub 时会失败，可手动访问 Releases 查看。
+普通提交和 Pull Request 使用 `TypeScript desktop checks` 检查格式、单元/集成测试、构建和 Electron 界面。迁移对应关系和验收范围见 [迁移说明](desktop/MIGRATION.md)。
 
-日志默认位于 `%USERPROFILE%\AppData\Roaming\RainClassroomAssistant\logs\`：`RainClassroomAssistant.log` 为运行日志，轮转日志保留 7 天；`RainClassroomAssistant_error.log` 为错误日志，轮转日志保留 14 天。日志会记录课程和题目信息，异常详情还可能包含变量值，**上传前请遮盖会话、密钥、邮箱凭据及个人信息**。
 
-如仍无法解决，请到[本仓库 Issues](https://github.com/infstellar/RainClassroomAssistant/issues)反馈，提供软件版本或提交号、Windows/Python 版本（源码运行时）、雨课堂类型、源码或 EXE 运行方式、复现步骤、预期与实际结果，以及脱敏后的相关日志或截图。反馈 AI 问题时补充模型名、协议和错误码即可，不要附带真实密钥或完整配置。
+发布采用 GitHub 自带的 `GITHUB_TOKEN`，不需要额外配置个人访问令牌。仓库需启用 Actions；发布任务申请 `contents: write` 权限。安装包暂未配置代码签名证书，Windows 可能显示未知发布者提示。
 
-## 版本发布（维护者）
+每次发布先在 `main` 更新 `desktop/package.json` 与锁文件中的版本号，提交后推送分支，再推送同名标签。示例（在项目根目录执行，版本以实际值为准）：
 
-打包发布使用 [GitHub Actions](.github/workflows/python-app.yml)，仅在推送新版本标签（如 `v0.4.3`）时自动执行。普通 `main` 提交不会触发打包，也不提供手动触发入口；删除或强制移动已有标签不会执行打包发布。其他代码检查流程仍按各自规则运行。
+```powershell
+cd desktop
+npm version 0.5.1 --no-git-tag-version
+cd ..
+git add desktop/package.json desktop/package-lock.json
+git commit -m "chore: release v0.5.1"
+git push origin main
+git tag v0.5.1
+git push origin v0.5.1
+```
 
-1. 在 `main` 上更新 `file_version_info.txt` 中的版本信息（`filevers`、`prodvers`、`FileVersion` 和 `ProductVersion`），提交修改。
-2. 推送 `main`，再为准备发布的提交创建并推送 `v主版本.次版本.修订号` 标签。例如，项目版本更新为 `0.4.3` 后执行：
+首次发布前，请先把整个桌面重构和 `.github/workflows/desktop-*.yml` 合入 `main`。发布任务会核对版本、安装包大小及 SHA-512，生成 `SHA256SUMS.txt`，并在草稿 Release 上传全部文件后公开。任何检查失败都不会公开新版；失败后可重跑工作流，已公开的版本禁止覆盖，应递增版本重新发布。
 
-   ```bash
-   git switch main
-   git push origin main
-   git tag v0.4.3
-   git push origin v0.4.3
-   ```
-
-3. 在仓库 Actions 中查看“Python application”。流程会检查标签提交是否属于 `main` 的历史、标签版本是否与 `FileVersion` 一致，然后构建该标签对应的 Windows EXE。
-4. 构建成功后，自动以该标签发布 Release，附带 `RainClassroomAssistant.exe` 和 `version.txt`，并在发布说明中记录 EXE 的 SHA-256。
-
-## 屎山问题
-
-由于时间不多，所以有些代码是vibe coding出来的，很多屎山代码（特别是日志部分，原项目的日志系统有些变态了）。目前倒是不影响使用，未来有空会修复。
+安装版更新依赖 Release 中的 `latest.yml`、对应的 Setup EXE 和 `.blockmap`，请保留这些资产。`version.txt` 与固定名称便携包保留给早期 Python 更新器使用。便携版用户可改装 Setup 版以获得后续自动更新。首次端到端验收需要先发布一个安装版，再发布更高版本，确认旧版能下载并安装更新；本地测试不能代替这一步。
