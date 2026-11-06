@@ -1,0 +1,4 @@
+# Keep formatted desktop sources identical on Windows and CI checkouts.
+desktop/** text=auto eol=lf
+.github/** text=auto eol=lf
+*.ico -text

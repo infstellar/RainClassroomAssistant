@@ -6,7 +6,6 @@ on:
 
 jobs:
   check-need-info:
-    id: check-need-info
     runs-on: ubuntu-latest
     steps:
       - name: close-issues
@@ -21,7 +20,6 @@ jobs:
 
             Since the issue was labeled as "need more info" but no response was received for 15 days. Now close the issue. If you have any questions, feel free to comment.
   issue-remove-inactive:
-    id: issue-remove-inactive
     runs-on: ubuntu-latest
     steps:
       - name: remove inactive
