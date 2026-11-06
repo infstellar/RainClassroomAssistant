@@ -62,6 +62,7 @@ jobs:
       - name: Smoke-test the packaged desktop
         working-directory: desktop
         env:
+          DEBUG: pw:browser
           RAINCLASSROOM_EXECUTABLE: ${{ github.workspace }}\desktop\release\win-unpacked\摸鱼课堂.exe
         run: npm run test:smoke
 

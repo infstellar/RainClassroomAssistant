@@ -38,6 +38,7 @@ const app = await _electron.launch({
     ...(executable ? [] : [resolve('.')]),
     `--user-data-dir=${root}`,
     '--disable-gpu',
+    '--enable-logging=stderr',
   ],
   env,
   timeout: 30000,
