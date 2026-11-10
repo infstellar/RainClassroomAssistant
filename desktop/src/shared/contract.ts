@@ -106,7 +106,21 @@ export interface AssistantConfig {
   ai_analysis_settings: AiAnalysisSettings
 }
 
+export interface DownloadedPresentation {
+  course: string
+  title: string
+  slides: Array<{ name: string; modified: number }>
+  modified: number
+}
+
 export interface DesktopBridge {
+  getDownloadedPresentations(): Promise<DownloadedPresentation[]>
+  getPptImage(course: string, title: string, name: string): Promise<string>
+  openPptFolder(course?: string, title?: string): Promise<void>
+  testAi(config: AssistantConfig): Promise<AiServiceTestResult>
+  getQuestionDecks(): Promise<QuestionDeck[]>
+  getQuestions(deckId: string): Promise<QuestionEntry[]>
+  getQuestionImage(deckId: string, index: string): Promise<string | null>
   supportsOpenAtLogin(): Promise<boolean>
   getRuntimeState(): Promise<RuntimeState>
   getCourses(): Promise<Course[]>
@@ -128,6 +142,27 @@ export interface DesktopBridge {
   openReleasePage(): Promise<void>
   installUpdate(): Promise<void>
   onUpdateState(callback: (state: UpdateState) => void): () => void
+}
+
+export interface AiServiceTestResult {
+  ok: boolean
+  message: string
+  elapsedMs: number
+}
+
+export interface QuestionDeck {
+  id: string
+  lessonName: string
+  title: string
+}
+
+export interface QuestionEntry {
+  index: string
+  text: string
+  aiAnswer: unknown[] | null
+  answer: unknown[] | null
+  source: 'manual' | 'ai' | null
+  status: 'answered' | 'unanswered' | 'failed' | 'context'
 }
 
 export interface LoginUpdate {

@@ -2,6 +2,16 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { DesktopBridge } from '../shared/contract'
 
 const desktopBridge: DesktopBridge = {
+  getDownloadedPresentations: () => ipcRenderer.invoke('ppt:list'),
+  getPptImage: (course, title, name) =>
+    ipcRenderer.invoke('ppt:image', course, title, name),
+  openPptFolder: (course, title) =>
+    ipcRenderer.invoke('ppt:open-folder', course, title),
+  testAi: (config) => ipcRenderer.invoke('ai:test', config),
+  getQuestionDecks: () => ipcRenderer.invoke('questions:decks'),
+  getQuestions: (id) => ipcRenderer.invoke('questions:list', id),
+  getQuestionImage: (id, index) =>
+    ipcRenderer.invoke('questions:image', id, index),
   supportsOpenAtLogin: () => ipcRenderer.invoke('startup:supported'),
   getRuntimeState: () => ipcRenderer.invoke('runtime:get-state'),
   getCourses: () => ipcRenderer.invoke('runtime:get-courses'),

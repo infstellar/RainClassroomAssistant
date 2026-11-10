@@ -68,6 +68,136 @@ try {
   )
   await page.getByRole('button', { name: '版本下载', exact: true }).waitFor()
   await page.screenshot({ path: join(artifacts, 'overview.png') })
+  await page.getByRole('button', { name: 'PPT 预览', exact: true }).click()
+  await page.getByRole('heading', { name: '暂无已下载的 PPT 图片' }).waitFor()
+  const pptDirectory = join(
+    root,
+    'downloads',
+    'rainclasscache',
+    '测试课程',
+    '测试课件',
+  )
+  await mkdir(pptDirectory, { recursive: true })
+  const png = Buffer.from(
+    await page.evaluate(() => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 1280
+      canvas.height = 720
+      const context = canvas.getContext('2d')
+      context.fillStyle = '#f4f8f6'
+      context.fillRect(0, 0, 1280, 720)
+      context.fillStyle = '#278760'
+      context.fillRect(0, 0, 20, 720)
+      context.font = 'bold 54px sans-serif'
+      context.fillText('PPT 图片预览', 90, 220)
+      context.fillStyle = '#43574c'
+      context.font = '30px sans-serif'
+      context.fillText('按页浏览 · 放大查看 · 本地课件', 90, 310)
+      return canvas.toDataURL('image/png').split(',')[1]
+    }),
+    'base64',
+  )
+  for (const name of ['1.jpg', '2.jpg', '10.jpg'])
+    await writeFile(join(pptDirectory, name), png)
+  await page.getByRole('button', { name: '刷新课件', exact: true }).click()
+  await page
+    .getByRole('img', { name: '测试课件 第 1 页', exact: true })
+    .waitFor()
+  await page.waitForFunction(
+    () => document.querySelector('.ppt-stage img')?.naturalWidth > 0,
+  )
+  assert.equal(
+    await page
+      .getByRole('button', { name: '上一页', exact: true })
+      .isDisabled(),
+    true,
+  )
+  await page.getByRole('button', { name: '下一页', exact: true }).click()
+  await page
+    .getByRole('img', { name: '测试课件 第 2 页', exact: true })
+    .waitFor()
+  await page.getByRole('button', { name: '第 10 页', exact: true }).click()
+  await page
+    .getByRole('img', { name: '测试课件 第 10 页', exact: true })
+    .waitFor()
+  assert.equal(
+    await page
+      .getByRole('button', { name: '下一页', exact: true })
+      .isDisabled(),
+    true,
+  )
+  await page.getByRole('button', { name: '放大查看', exact: true }).click()
+  assert.equal(await page.locator('.ppt-stage.zoomed').count(), 1)
+  await page.getByLabel('搜索课件').fill('不存在')
+  await page.getByRole('heading', { name: '没有匹配的课件' }).waitFor()
+  await page.getByLabel('搜索课件').fill('测试课程')
+  await page
+    .getByRole('img', { name: '测试课件 第 10 页', exact: true })
+    .waitFor()
+  await page.getByRole('button', { name: '适应窗口', exact: true }).click()
+  await page.locator('.ppt-viewer').scrollIntoViewIfNeeded()
+  await page.screenshot({ path: join(artifacts, 'ppt-preview.png') })
+  await writeFile(join(pptDirectory, '2.jpg'), 'broken image')
+  await page.getByRole('button', { name: '刷新课件', exact: true }).click()
+  await page.getByRole('button', { name: '第 2 页', exact: true }).click()
+  await page.getByRole('alert').filter({ hasText: '图片无法读取' }).waitFor()
+  await writeFile(
+    join(pptDirectory, 'presentation.json'),
+    JSON.stringify({
+      lessonName: '测试课程',
+      title: '测试课件',
+      slides: [
+        { index: 1, problem: { content: '测试题目：请选择正确选项' } },
+        { index: 2, problem: {} },
+      ],
+    }),
+  )
+  await mkdir(join(root, 'ai_answers_cache'), { recursive: true })
+  const questionCache = join(root, 'ai_answers_cache', '测试课程_测试课件.json')
+  await writeFile(
+    questionCache,
+    JSON.stringify({
+      metadata: { lesson_name: '测试课程', presentation_title: '测试课件' },
+      answers: { 1: [2] },
+      manual_answers: { 1: [3], 2: [] },
+    }),
+  )
+  await page.getByRole('button', { name: '题库与答案', exact: true }).click()
+  await page.getByText('测试题目：请选择正确选项', { exact: true }).waitFor()
+  await page.waitForFunction(
+    () => document.querySelector('.question-image')?.naturalWidth > 0,
+  )
+  assert.equal(
+    await page.locator('.question-answers strong').nth(0).textContent(),
+    '2',
+  )
+  assert.equal(
+    await page.locator('.question-answers strong').nth(1).textContent(),
+    '3',
+  )
+  await page.screenshot({ path: join(artifacts, 'question-bank.png') })
+  await page.getByLabel('只看暂无答案').check()
+  assert.equal(await page.locator('.question-tab').count(), 1)
+  await page.getByRole('button', { name: '第 2 页 未获答案' }).click()
+  await page
+    .getByText('本地题图不可用，请重新下载课件。', { exact: true })
+    .waitFor()
+  await writeFile(
+    questionCache,
+    JSON.stringify({
+      metadata: { lesson_name: '测试课程', presentation_title: '测试课件' },
+      answers: { 1: [2], 2: [4] },
+    }),
+  )
+  await page.getByRole('button', { name: '刷新题库', exact: true }).click()
+  await page.getByText('没有匹配的题目', { exact: true }).waitFor()
+  await page.getByLabel('只看暂无答案').uncheck()
+  await page.getByRole('button', { name: '第 2 页 已有答案' }).click()
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.question-answers strong')?.textContent === '4',
+  )
+  await page.getByRole('button', { name: '运行概览', exact: true }).click()
   await page.getByRole('button', { name: '帮助', exact: true }).click()
   await page.getByRole('heading', { name: '使用帮助' }).waitFor()
   await page.getByRole('button', { name: '知道了' }).click()
@@ -236,6 +366,41 @@ try {
   await page.getByRole('button', { name: '刷新二维码', exact: true }).click()
   assert.equal(await app.evaluate(() => globalThis.smokeLoginCalls), 2)
   await page.getByRole('button', { name: '关闭', exact: true }).click()
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('ai:test')
+    globalThis.aiTestCalls = 0
+    ipcMain.handle('ai:test', async (_event, config) => {
+      globalThis.aiTestConfig = config
+      globalThis.aiTestCalls += 1
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      return {
+        ok: globalThis.aiTestCalls === 1,
+        message:
+          globalThis.aiTestCalls === 1
+            ? '图片请求测试成功'
+            : 'AI API HTTP 401: invalid key',
+        elapsedMs: 150,
+      }
+    })
+  })
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByLabel('API 密钥', { exact: true }).fill('draft-test-key')
+  await page.getByLabel('模型名称', { exact: true }).fill('draft-test-model')
+  await page.getByRole('button', { name: '测试 AI 服务', exact: true }).click()
+  await page.getByRole('status').filter({ hasText: '测试成功' }).waitFor()
+  assert.equal(
+    (await app.evaluate(() => globalThis.aiTestConfig)).openai_api_key,
+    'draft-test-key',
+  )
+  assert.equal(
+    (await app.evaluate(() => globalThis.aiTestConfig)).openai_model,
+    'draft-test-model',
+  )
+  await page.getByRole('button', { name: '测试 AI 服务', exact: true }).click()
+  await page.getByRole('alert').filter({ hasText: 'HTTP 401' }).waitFor()
+  await page
+    .locator('.ai-service-test')
+    .screenshot({ path: join(artifacts, 'ai-service-test.png') })
   assert.deepEqual(errors, [])
   console.log(
     JSON.stringify({
@@ -243,6 +408,7 @@ try {
       checked: [
         'renderer',
         'preload IPC',
+        'downloaded PPT preview, numeric paging, zoom, search and corrupt images',
         'help',
         '42 settings fields',
         '18px text and responsive layout',
@@ -252,6 +418,8 @@ try {
         'retry and in-flight edit preservation',
         'log level and text filtering',
         'QR refresh',
+        'question images, manual priority, unanswered filter and refreshed answers',
+        'AI service test with draft config, success and failure',
       ],
       artifacts,
     }),

@@ -13,6 +13,245 @@ import {
 } from './ai-analyzer.ts'
 import { defaultConfig } from '../shared/config.ts'
 
+for (const protocol of ['responses', 'chat_completions'] as const) {
+  test(`AI service test sends the configured ${protocol} image request even when analysis is disabled`, async (t) => {
+    let requestUrl = ''
+    let body: Record<string, unknown> = {}
+    let requests = 0
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (url: string, options: RequestInit) => {
+        requestUrl = url
+        body = JSON.parse(String(options.body))
+        requests += 1
+        assert.equal(
+          (options.headers as Record<string, string>).Authorization,
+          'Bearer draft-key',
+        )
+        return protocol === 'responses'
+          ? new Response(
+              'data: {"type":"response.completed","response":{"status":"completed","output_text":"[1]"}}\n\n',
+              { headers: { 'content-type': 'text/event-stream' } },
+            )
+          : Response.json({ choices: [{ message: { content: '[1]' } }] })
+      },
+    )
+    const analyzer = new AiAnalyzer(async () => defaultConfig, {
+      write: async () => undefined,
+    } as never)
+    const result = await analyzer.testService({
+      ...defaultConfig,
+      enable_ai_analysis: false,
+      openai_api_base: 'https://example.test/v1',
+      openai_api_key: 'draft-key',
+      openai_model: 'draft-model',
+      ai_analysis_settings: { ...defaultConfig.ai_analysis_settings, protocol },
+    })
+    assert.equal(result.ok, true)
+    assert.equal(requests, 1)
+    assert.match(
+      requestUrl,
+      protocol === 'responses' ? /\/responses$/ : /\/chat\/completions$/,
+    )
+    assert.equal(body.model, 'draft-model')
+    assert.match(JSON.stringify(body), /data:image\/png;base64,/)
+  })
+}
+
+test('AI service test reports auth, connection and malformed-output failures and hides the key', async (t) => {
+  const analyzer = new AiAnalyzer(async () => defaultConfig, {
+    write: async () => undefined,
+  } as never)
+  const config = { ...defaultConfig, openai_api_key: 'private-key' }
+  let mode = 'auth'
+  let requests = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    requests += 1
+    if (mode === 'auth')
+      return new Response('invalid key private-key', { status: 401 })
+    if (mode === 'network')
+      throw new TypeError('fetch failed', {
+        cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }),
+      })
+    return Response.json({ output_text: 'unexpected' })
+  })
+  const auth = await analyzer.testService(config)
+  assert.equal(auth.ok, false)
+  assert.match(auth.message, /401/)
+  assert.ok(!auth.message.includes('private-key'))
+  mode = 'network'
+  assert.match((await analyzer.testService(config)).message, /ECONNRESET/)
+  mode = 'output'
+  assert.match(
+    (await analyzer.testService(config)).message,
+    /未获得预期测试答案/,
+  )
+  assert.equal(requests, 3)
+  assert.match(
+    (await analyzer.testService({ ...config, openai_api_key: '' })).message,
+    /密钥/,
+  )
+  assert.equal(requests, 3)
+})
+
+for (const failure of ['network', 'timeout', 'http', 'stream']) {
+  test(`retries ${failure} failure and logs recovery before caching the answer`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'rain-ai-retry-'))
+    const imagePath = join(root, '3.jpg')
+    await writeFile(imagePath, Buffer.from('ffd8ffe000104a464946', 'hex'))
+    const logged: string[] = []
+    let requests = 0
+    t.mock.method(globalThis, 'fetch', async () => {
+      requests += 1
+      if (requests === 1) {
+        if (failure === 'network')
+          throw new TypeError('fetch failed', {
+            cause: Object.assign(new Error('connection reset'), {
+              code: 'ECONNRESET',
+            }),
+          })
+        if (failure === 'timeout')
+          throw new DOMException('request timed out', 'TimeoutError')
+        if (failure === 'http')
+          return new Response('unavailable', { status: 503 })
+        return new Response(
+          'data: {"type":"response.output_text.delta","delta":"[9]"}\n\n',
+          {
+            headers: { 'content-type': 'text/event-stream' },
+          },
+        )
+      }
+      return Response.json({ output_text: '[2]' })
+    })
+    const config = {
+      ...defaultConfig,
+      enable_ai_analysis: true,
+      openai_api_key: 'test-key',
+      ai_analysis_settings: {
+        ...defaultConfig.ai_analysis_settings,
+        max_retries: 2,
+        delay_between_requests: 0,
+      },
+    }
+    try {
+      const analyzer = new AiAnalyzer(
+        async () => config,
+        {
+          write: async (_level: string, _source: string, message: string) => {
+            logged.push(message)
+          },
+        } as never,
+        root,
+      )
+      assert.deepEqual(
+        await analyzer.analyzeLiveSlide('lesson', 'deck', '3', imagePath),
+        [2],
+      )
+      assert.equal(requests, 2)
+      assert.ok(
+        logged.some((message) =>
+          /deck 第 3 页现场分析.*1 秒后自动重试 1\/2/.test(message),
+        ),
+      )
+      assert.ok(logged.some((message) => /第 1\/2 次重试成功/.test(message)))
+      if (failure === 'network')
+        assert.ok(logged.some((message) => message.includes('ECONNRESET')))
+      const cache = JSON.parse(
+        await readFile(
+          join(root, 'ai_answers_cache', 'lesson_deck.json'),
+          'utf8',
+        ),
+      )
+      assert.deepEqual(cache.answers, { '3': [2] })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+}
+
+for (const retries of [0, 2]) {
+  test(`reports exhausted retries (${retries}) and reanalyzes only uncached pages`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'rain-ai-exhausted-'))
+    await writeFile(
+      join(root, '3.jpg'),
+      Buffer.from('ffd8ffe000104a464946', 'hex'),
+    )
+    await writeFile(
+      join(root, '4.jpg'),
+      Buffer.from('ffd8ffe000104a464946', 'hex'),
+    )
+    const logged: Array<{ level: string; message: string }> = []
+    let requests = 0
+    let recovered = false
+    t.mock.method(globalThis, 'fetch', async () => {
+      requests += 1
+      if (requests === 1 || recovered)
+        return Response.json({ output_text: '[2]' })
+      throw new TypeError('fetch failed')
+    })
+    const config = {
+      ...defaultConfig,
+      enable_ai_analysis: true,
+      openai_api_key: 'test-key',
+      ai_analysis_settings: {
+        ...defaultConfig.ai_analysis_settings,
+        max_retries: retries,
+        delay_between_requests: 0,
+      },
+    }
+    try {
+      const analyzer = new AiAnalyzer(
+        async () => config,
+        {
+          write: async (level: string, _source: string, message: string) => {
+            logged.push({ level, message })
+          },
+        } as never,
+        root,
+      )
+      const slides = [
+        { index: 3, problem: {} },
+        { index: 4, problem: {} },
+      ]
+      await analyzer.analyzePresentation('lesson', 'deck', slides, root)
+      assert.equal(requests, retries + 2)
+      assert.equal(
+        logged.filter(({ message }) => message.includes('秒后自动重试')).length,
+        retries,
+      )
+      assert.ok(
+        logged.some(({ message }) =>
+          message.includes(`已请求 ${retries + 1} 次`),
+        ),
+      )
+      assert.ok(
+        logged.some(({ message }) =>
+          message.includes(retries ? '已用尽 2 次自动重试' : '自动重试已关闭'),
+        ),
+      )
+      assert.equal(logged.at(-1)?.level, 'WARNING')
+      assert.match(
+        logged.at(-1)!.message,
+        /获得答案 1 道，未获得答案 1 页（4）/,
+      )
+      const cachePath = join(root, 'ai_answers_cache', 'lesson_deck.json')
+      const partial = JSON.parse(await readFile(cachePath, 'utf8'))
+      assert.equal(partial.metadata.analysis_status, 'partial')
+      assert.deepEqual(partial.answers, { '3': [2] })
+      recovered = true
+      await analyzer.analyzePresentation('lesson', 'deck', slides, root)
+      assert.equal(requests, retries + 3)
+      const completed = JSON.parse(await readFile(cachePath, 'utf8'))
+      assert.equal(completed.metadata.analysis_status, 'completed')
+      assert.deepEqual(completed.answers, { '3': [2], '4': [2] })
+      assert.equal(logged.at(-1)?.level, 'INFO')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+}
+
 test('builds Responses and Chat Completions image payloads from config', () => {
   const image = [{ mime: 'image/png', base64: 'YWJj' }]
   const responses = buildAiRequest(

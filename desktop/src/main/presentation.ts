@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { PDFDocument } from 'pdf-lib'
 import type { AppLogger } from './logger'
@@ -124,6 +124,13 @@ export async function downloadPresentation(options: {
     mkdir(imageDirectory, { recursive: true }),
     mkdir(outputDirectory, { recursive: true }),
   ])
+  const manifestPath = join(imageDirectory, 'presentation.json')
+  const temporaryManifest = `${manifestPath}.${randomUUID()}.tmp`
+  await writeFile(
+    temporaryManifest,
+    JSON.stringify({ lessonName, title, slides }),
+  )
+  await rename(temporaryManifest, manifestPath)
   const semaphore = new Semaphore(8)
   const loaded = await Promise.all(
     slides.map((slide) =>

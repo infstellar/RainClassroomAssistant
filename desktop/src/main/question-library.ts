@@ -1,0 +1,208 @@
+import { readFile, readdir } from 'node:fs/promises'
+import { join } from 'node:path'
+import type { QuestionDeck, QuestionEntry } from '../shared/contract'
+import { cacheMatchesSlides, resolveCachedAnswer } from './answer-cache.ts'
+import {
+  safePathComponent,
+  slideImagePath,
+  type SlideData,
+} from './presentation.ts'
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+async function json(path: string) {
+  try {
+    return record(JSON.parse(await readFile(path, 'utf8')))
+  } catch {
+    return {}
+  }
+}
+
+async function entries(path: string) {
+  return readdir(path, { withFileTypes: true }).catch(() => [])
+}
+
+interface DeckRecord extends QuestionDeck {
+  imageDirectory: string
+  cachePath: string
+  slides?: SlideData[]
+}
+
+export class QuestionLibrary {
+  private readonly root: string
+  constructor(root: string) {
+    this.root = root
+  }
+
+  private async catalog() {
+    const decks = new Map<string, DeckRecord>()
+    const add = (
+      lessonName: string,
+      title: string,
+      cachePath: string,
+      imageDirectory: string,
+      slides?: SlideData[],
+    ) => {
+      const id = Buffer.from(cachePath).toString('base64url')
+      decks.set(id, {
+        id,
+        lessonName,
+        title,
+        cachePath,
+        imageDirectory,
+        slides,
+      })
+    }
+    const cacheRoot = join(this.root, 'ai_answers_cache')
+    const imageRoot = join(this.root, 'downloads', 'rainclasscache')
+    // Older installations have answer caches and images but no presentation manifest.
+    for (const file of await entries(cacheRoot)) {
+      if (!file.isFile() || !file.name.endsWith('.json')) continue
+      const cachePath = join(cacheRoot, file.name)
+      const cache = await json(cachePath)
+      if (!Object.keys(cache).length) continue
+      const metadata = record(cache.metadata)
+      const lesson = String(metadata.lesson_name ?? '未知课程')
+      const title = String(
+        metadata.presentation_title ?? file.name.slice(0, -5),
+      )
+      add(
+        lesson,
+        title,
+        cachePath,
+        join(
+          imageRoot,
+          safePathComponent(lesson, '未知课程'),
+          safePathComponent(title),
+        ),
+      )
+    }
+    for (const lesson of await entries(imageRoot)) {
+      if (!lesson.isDirectory() || lesson.isSymbolicLink()) continue
+      for (const deck of await entries(join(imageRoot, lesson.name))) {
+        if (!deck.isDirectory() || deck.isSymbolicLink()) continue
+        const directory = join(imageRoot, lesson.name, deck.name)
+        const manifest = await json(join(directory, 'presentation.json'))
+        if (!Array.isArray(manifest.slides)) continue
+        const slides = manifest.slides.filter((value): value is SlideData => {
+          const slide = record(value)
+          return (
+            typeof slide.index === 'string' || typeof slide.index === 'number'
+          )
+        })
+        if (!slides.some((slide) => slide.problem)) continue
+        add(
+          String(manifest.lessonName ?? lesson.name),
+          String(manifest.title ?? deck.name),
+          join(cacheRoot, `${lesson.name}_${deck.name}.json`),
+          directory,
+          slides,
+        )
+      }
+    }
+    return decks
+  }
+
+  async listDecks(): Promise<QuestionDeck[]> {
+    return [...(await this.catalog()).values()]
+      .map(({ id, lessonName, title }) => ({ id, lessonName, title }))
+      .sort((a, b) =>
+        `${a.lessonName}${a.title}`.localeCompare(
+          `${b.lessonName}${b.title}`,
+          'zh-CN',
+        ),
+      )
+  }
+
+  private async deck(id: string) {
+    const deck = (await this.catalog()).get(id)
+    if (!deck) throw new Error('课件不存在，请刷新题库')
+    return deck
+  }
+
+  async listQuestions(id: string): Promise<QuestionEntry[]> {
+    const deck = await this.deck(id)
+    let cache = await json(deck.cachePath)
+    if (deck.slides && !cacheMatchesSlides(cache, deck.slides)) cache = {}
+    const metadata = record(cache.metadata)
+    const ai = record(cache.metadata ? cache.answers : cache)
+    const manual = record(cache.manual_answers)
+    const indexes = deck.slides
+      ? deck.slides
+          .filter((slide) => slide.problem)
+          .map((slide) => String(slide.index))
+      : [
+          ...new Set([
+            ...Object.keys(ai),
+            ...Object.keys(manual),
+            ...(Array.isArray(metadata.problem_signature)
+              ? metadata.problem_signature.map((item) =>
+                  String(record(item).index),
+                )
+              : []),
+          ]),
+        ]
+    return indexes
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .map((index) => {
+        const value = ai[index]
+        const needsContext =
+          Array.isArray(value) &&
+          value.length === 1 &&
+          value[0] === '__INSUFFICIENT_CONTEXT__'
+        const aiAnswer =
+          Array.isArray(value) && value.length && !needsContext ? value : null
+        const answer = resolveCachedAnswer(cache, index) ?? null
+        const manualAnswer = resolveCachedAnswer(
+          { metadata: {}, manual_answers: manual, answers: {} },
+          index,
+        )
+        const slide = deck.slides?.find((item) => String(item.index) === index)
+        const problem = record(slide?.problem)
+        const text = [problem.content, problem.title, problem.body].find(
+          (item) => typeof item === 'string',
+        )
+        return {
+          index,
+          text: typeof text === 'string' ? text : '',
+          aiAnswer,
+          answer,
+          source: answer ? (manualAnswer ? 'manual' : 'ai') : null,
+          status: answer
+            ? 'answered'
+            : needsContext
+              ? 'context'
+              : Object.hasOwn(manual, index) ||
+                  metadata.analysis_status === 'failed'
+                ? 'failed'
+                : 'unanswered',
+        }
+      })
+  }
+
+  async image(id: string, index: string): Promise<string | null> {
+    const deck = await this.deck(id)
+    if (
+      !(await this.listQuestions(id)).some(
+        (question) => question.index === index,
+      )
+    )
+      throw new Error('题目不存在')
+    try {
+      const bytes = await readFile(slideImagePath(deck.imageDirectory, index))
+      const mime =
+        bytes[0] === 0x89 && bytes[1] === 0x50
+          ? 'image/png'
+          : bytes[0] === 0xff && bytes[1] === 0xd8
+            ? 'image/jpeg'
+            : null
+      return mime ? `data:${mime};base64,${bytes.toString('base64')}` : null
+    } catch {
+      return null
+    }
+  }
+}

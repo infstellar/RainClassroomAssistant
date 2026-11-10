@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AssistantConfig } from '../shared/contract'
+import type { AiServiceTestResult, AssistantConfig } from '../shared/contract'
 import type { AppLogger } from './logger'
 import { resolveCachedAnswer } from './answer-cache.ts'
 import {
@@ -255,6 +255,49 @@ export class AiAnalyzer {
     this.root = root
   }
 
+  async testService(config: AssistantConfig): Promise<AiServiceTestResult> {
+    const start = Date.now()
+    try {
+      if (!config.openai_api_key.trim()) throw new Error('请先填写 API 密钥')
+      if (!config.openai_model.trim()) throw new Error('请先填写模型名称')
+      const url = new URL(config.openai_api_base)
+      if (!['https:', 'http:'].includes(url.protocol))
+        throw new Error('API 地址必须为 HTTP 或 HTTPS')
+      const answer = await this.analyze(
+        {
+          ...config,
+          ai_analysis_settings: {
+            ...config.ai_analysis_settings,
+            max_retries: 0,
+          },
+        },
+        [
+          {
+            mime: 'image/png',
+            base64:
+              'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
+          },
+        ],
+        '这是图片接口连接测试。请确认收到图片后只返回数组[1]。',
+        'AI 服务测试',
+      )
+      if (JSON.stringify(answer) !== '[1]')
+        throw new Error(
+          '接口已返回，但未获得预期测试答案 [1]，请检查模型及响应格式',
+        )
+      return {
+        ok: true,
+        message: '图片请求测试成功，模型已返回预期答案',
+        elapsedMs: Date.now() - start,
+      }
+    } catch (error) {
+      let message = describeRequestError(error)
+      if (config.openai_api_key)
+        message = message.split(config.openai_api_key).join('[REDACTED]')
+      return { ok: false, message, elapsedMs: Date.now() - start }
+    }
+  }
+
   async analyzePresentation(
     lessonName: string,
     title: string,
@@ -293,7 +336,13 @@ export class AiAnalyzer {
           mime: bytes[0] === 0x89 ? 'image/png' : 'image/jpeg',
           base64: Buffer.from(bytes).toString('base64'),
         }
-        let answer = await this.analyze(config, [image], singlePrompt)
+        const requestLabel = `${title} 第 ${index} 页`
+        let answer = await this.analyze(
+          config,
+          [image],
+          singlePrompt,
+          requestLabel,
+        )
         if (answer.length === 1 && answer[0] === insufficientContext) {
           for (const count of [3, 5, 7, 9]) {
             const position = slides.findIndex(
@@ -319,7 +368,7 @@ export class AiAnalyzer {
             }
             if (images.length < 2) continue
             const prompt = `请根据多张PPT图片回答最后一张图片(slide=${index})中的题目。前面的图片只作上下文。若上下文不足只返回["上下文不足"]；没有题目返回[]。只输出答案数组，不要解释。`
-            answer = await this.analyze(config, images, prompt)
+            answer = await this.analyze(config, images, prompt, requestLabel)
             if (answer.length !== 1 || answer[0] !== insufficientContext) break
           }
         }
@@ -337,6 +386,18 @@ export class AiAnalyzer {
           `${title} 第 ${index} 页失败：${error instanceof Error ? error.message : '未知错误'}`,
         )
       }
+      await writeAnswerCache(
+        cachePath,
+        {
+          lesson_name: lessonName,
+          presentation_title: title,
+          analysis_status: 'analyzing',
+          version: '2.1',
+        },
+        answers,
+        failed.map((item) => String(item.index)),
+        slides,
+      )
       const delay = Number(
         config.ai_analysis_settings.delay_between_requests ?? 1,
       )
@@ -360,9 +421,11 @@ export class AiAnalyzer {
       slides,
     )
     await this.logger.write(
-      'INFO',
+      failed.length ? 'WARNING' : 'INFO',
       'AI 分析',
-      `${title} 分析完成，获得答案 ${Object.keys(answers).length} 道`,
+      failed.length
+        ? `${title} 分析结束，获得答案 ${Object.keys(answers).length} 道，未获得答案 ${failed.length} 页（${failed.map((slide) => slide.index).join('、')}），可重新分析以补全`
+        : `${title} 分析完成，获得答案 ${Object.keys(answers).length} 道`,
     )
   }
 
@@ -381,7 +444,8 @@ export class AiAnalyzer {
       mime: bytes[0] === 0x89 ? 'image/png' : 'image/jpeg',
       base64: Buffer.from(bytes).toString('base64'),
     }
-    let answer = await this.analyze(config, [image], singlePrompt)
+    const requestLabel = `${title} 第 ${slideIndex} 页现场分析`
+    let answer = await this.analyze(config, [image], singlePrompt, requestLabel)
     if (
       answer.length === 1 &&
       answer[0] === insufficientContext &&
@@ -416,7 +480,7 @@ export class AiAnalyzer {
         }
         if (images.length < 2) continue
         const prompt = `请根据多张PPT图片回答最后一张图片(slide=${slideIndex})中的题目。前面的图片只作上下文。若上下文不足只返回["上下文不足"]；没有题目返回[]。只输出答案数组，不要解释。`
-        answer = await this.analyze(config, images, prompt)
+        answer = await this.analyze(config, images, prompt, requestLabel)
         if (answer.length !== 1 || answer[0] !== insufficientContext) break
       }
     }
@@ -455,6 +519,7 @@ export class AiAnalyzer {
     config: AssistantConfig,
     images: Array<{ mime: string; base64: string }>,
     prompt: string,
+    requestLabel: string,
   ) {
     const settings = config.ai_analysis_settings
     const { url, payload } = buildAiRequest(config, images, prompt)
@@ -510,15 +575,36 @@ export class AiAnalyzer {
           if (summary)
             await this.logger.write('INFO', 'AI 分析', `推理摘要：${summary}`)
         }
+        if (attempt > 0)
+          await this.logger.write(
+            'INFO',
+            'AI 分析',
+            `${requestLabel} 第 ${attempt}/${retries} 次重试成功`,
+          )
         return parseAnswerArray(text)
       } catch (error) {
         lastError = error
-        if (attempt < retries)
-          await new Promise((resolve) =>
-            setTimeout(resolve, Math.min(2 ** attempt, 5) * 1000),
+        if (attempt < retries) {
+          const delay = Math.min(2 ** attempt, 5)
+          await this.logger.write(
+            'WARNING',
+            'AI 分析',
+            `${requestLabel} 请求失败：${describeRequestError(error)}；${delay} 秒后自动重试 ${attempt + 1}/${retries}`,
           )
+          await new Promise((resolve) => setTimeout(resolve, delay * 1000))
+        }
       }
     }
-    throw lastError instanceof Error ? lastError : new Error('AI 请求失败')
+    throw new Error(
+      `AI 请求失败（已请求 ${retries + 1} 次，${retries ? `已用尽 ${retries} 次自动重试` : '自动重试已关闭'}）：${describeRequestError(lastError)}`,
+      { cause: lastError },
+    )
   }
+}
+
+function describeRequestError(error: unknown): string {
+  if (!(error instanceof Error)) return '未知错误'
+  const cause = error.cause as { code?: unknown; message?: unknown } | undefined
+  const detail = cause?.code ?? cause?.message
+  return detail ? `${error.message}（${String(detail)}）` : error.message
 }

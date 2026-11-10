@@ -18,6 +18,13 @@ import { createRequire } from 'node:module'
 import { UpdateController } from './updater'
 import { copyLegacyDirectory } from './migration'
 import { loginImageMime } from './login-image'
+import { AiAnalyzer } from './ai-analyzer'
+import { QuestionLibrary } from './question-library'
+import {
+  listDownloadedPresentations,
+  readPptImage,
+  resolvePptPath,
+} from './ppt-library'
 import {
   initializeMonitoring,
   loginItemOptions,
@@ -191,10 +198,42 @@ function reportWindowLoadError(error: unknown) {
 }
 
 ipcMain.handle('runtime:get-state', () => runtime.getState())
+ipcMain.handle('ppt:list', () => listDownloadedPresentations(userDataPath()))
+ipcMain.handle(
+  'ppt:image',
+  (_event, course: string, title: string, name: string) =>
+    readPptImage(userDataPath(), course, title, name),
+)
+ipcMain.handle(
+  'ppt:open-folder',
+  async (_event, course?: string, title?: string) => {
+    const directory =
+      course !== undefined && title !== undefined
+        ? await resolvePptPath(userDataPath(), [course, title])
+        : join(userDataPath(), 'downloads', 'rainclasscache')
+    await mkdir(directory, { recursive: true })
+    const error = await shell.openPath(directory)
+    if (error) throw new Error(error)
+  },
+)
 ipcMain.handle('runtime:get-courses', () => runtime.getCourses())
 ipcMain.handle('runtime:start', () => runtime.start())
 ipcMain.handle('runtime:stop', () => runtime.stop())
 ipcMain.handle('logs:get-all', () => logger.list())
+ipcMain.handle('ai:test', (_event, config: AssistantConfig) =>
+  new AiAnalyzer(readConfig, logger, userDataPath()).testService(
+    normalizeConfig(config),
+  ),
+)
+ipcMain.handle('questions:decks', () =>
+  new QuestionLibrary(userDataPath()).listDecks(),
+)
+ipcMain.handle('questions:list', (_event, id: string) =>
+  new QuestionLibrary(userDataPath()).listQuestions(id),
+)
+ipcMain.handle('questions:image', (_event, id: string, index: string) =>
+  new QuestionLibrary(userDataPath()).image(id, index),
+)
 ipcMain.handle('config:get', () => readConfig())
 const supportsOpenAtLogin = () =>
   process.platform === 'win32' && app.isPackaged && !isolatedData

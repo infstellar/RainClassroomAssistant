@@ -1,4 +1,7 @@
+import { PptPreview } from './PptPreview'
 import { HelpTip } from './HelpTip'
+import { AiServiceTest } from './AiServiceTest'
+import { QuestionBank } from './QuestionBank'
 import { useAutoSaveConfig } from './useAutoSaveConfig'
 import { useEffect, useMemo, useState } from 'react'
 import {
@@ -34,7 +37,7 @@ import type {
   UpdateState,
 } from '../../shared/contract'
 
-type View = 'overview' | 'logs' | 'settings'
+type View = 'overview' | 'logs' | 'settings' | 'ppt' | 'questions'
 
 export default function App() {
   const [view, setView] = useState<View>('overview')
@@ -249,6 +252,12 @@ export default function App() {
         <div className="workspace-label">工作台</div>
         <nav className="nav-list" aria-label="主导航">
           <button
+            className={`nav-item ${view === 'questions' ? 'selected' : ''}`}
+            onClick={() => setView('questions')}
+          >
+            <BookOpen size={17} /> <span>题库与答案</span>
+          </button>
+          <button
             className={`nav-item ${view === 'overview' ? 'selected' : ''}`}
             onClick={() => setView('overview')}
           >
@@ -260,6 +269,12 @@ export default function App() {
           >
             <FileText size={17} /> <span>运行日志</span>
             <span className="nav-count">{logs.length}</span>
+          </button>
+          <button
+            className={`nav-item ${view === 'ppt' ? 'selected' : ''}`}
+            onClick={() => setView('ppt')}
+          >
+            <BookOpen size={17} /> <span>PPT 预览</span>
           </button>
         </nav>
 
@@ -298,7 +313,11 @@ export default function App() {
                 ? '运行概览'
                 : view === 'logs'
                   ? '运行日志'
-                  : '设置'}
+                  : view === 'ppt'
+                    ? 'PPT 预览'
+                    : view === 'questions'
+                      ? '题库与答案'
+                      : '设置'}
             </strong>
           </div>
           <div className="topbar-actions">
@@ -389,14 +408,22 @@ export default function App() {
                   ? '运行概览'
                   : view === 'logs'
                     ? '运行日志'
-                    : '设置'}
+                    : view === 'questions'
+                      ? '题库与答案'
+                      : view === 'ppt'
+                        ? 'PPT 预览'
+                        : '设置'}
               </h1>
               <p>
                 {view === 'overview'
                   ? '查看监听状态、课堂活动与最近运行事件。'
                   : view === 'logs'
                     ? '集中查看应用事件与诊断信息。'
-                    : '管理课堂自动化与 AI 分析参数。'}
+                    : view === 'questions'
+                      ? '逐题查看课件原图与当前答案。'
+                      : view === 'ppt'
+                        ? '浏览已下载的课件图片，按页查看课堂内容。'
+                        : '管理课堂自动化与 AI 分析参数。'}
               </p>
             </div>
             <div className="heading-actions">
@@ -462,7 +489,11 @@ export default function App() {
             </span>
           </div>
 
-          {view === 'settings' ? (
+          {view === 'questions' ? (
+            <QuestionBank />
+          ) : view === 'ppt' ? (
+            <PptPreview />
+          ) : view === 'settings' ? (
             <section className="settings-layout">
               {!config ? (
                 <div className="panel settings-unavailable">
@@ -1012,6 +1043,7 @@ export default function App() {
                       </div>
                       <Activity size={16} />
                     </div>
+                    <AiServiceTest config={config} />
                     <SettingToggle
                       label="启用 AI 分析"
                       description="课件下载后使用视觉模型分析题目"
