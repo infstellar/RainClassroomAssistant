@@ -1,3 +1,4 @@
+import { listAiTasks } from './ai-tasks'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import {
   access,
@@ -225,11 +226,17 @@ ipcMain.handle('ai:test', (_event, config: AssistantConfig) =>
     normalizeConfig(config),
   ),
 )
+ipcMain.handle('ai:tasks', () => listAiTasks(userDataPath()))
 ipcMain.handle('questions:decks', () =>
   new QuestionLibrary(userDataPath()).listDecks(),
 )
 ipcMain.handle('questions:list', (_event, id: string) =>
   new QuestionLibrary(userDataPath()).listQuestions(id),
+)
+ipcMain.handle(
+  'questions:save-answer',
+  (_event, id: string, index: string, answer: string) =>
+    new QuestionLibrary(userDataPath()).saveManualAnswer(id, index, answer),
 )
 ipcMain.handle('questions:image', (_event, id: string, index: string) =>
   new QuestionLibrary(userDataPath()).image(id, index),

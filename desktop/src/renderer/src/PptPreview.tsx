@@ -15,6 +15,50 @@ import './ppt-preview.css'
 const deckKey = (deck: DownloadedPresentation) =>
   JSON.stringify([deck.course, deck.title])
 
+function SlideThumbnail({
+  course,
+  title,
+  name,
+  number,
+  selected,
+  onClick,
+}: {
+  course: string
+  title: string
+  name: string
+  number: number
+  selected: boolean
+  onClick: () => void
+}) {
+  const [src, setSrc] = useState('')
+  useEffect(() => {
+    let active = true
+    void window.desktop
+      ?.getPptImage(course, title, name)
+      .then((image) => {
+        if (active) setSrc(image)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [course, title, name])
+
+  return (
+    <button
+      className={`ppt-thumbnail ${selected ? 'selected' : ''}`}
+      aria-label={`第 ${name.replace(/\.[^.]+$/, '')} 页`}
+      aria-current={selected ? 'page' : undefined}
+      onClick={onClick}
+    >
+      <span className="ppt-thumbnail-number">{number}</span>
+      <span className="ppt-thumbnail-image">
+        {src ? <img src={src} alt="" /> : <span>{number}</span>}
+      </span>
+    </button>
+  )
+}
+
 export function PptPreview() {
   const [decks, setDecks] = useState<DownloadedPresentation[]>([])
   const [selected, setSelected] = useState('')
@@ -169,31 +213,54 @@ export function PptPreview() {
         </div>
       ) : (
         <div className="ppt-layout">
-          <aside className="panel ppt-decks" aria-label="课件列表">
-            <div className="ppt-list-heading">
-              已下载课件 <span>{filtered.length}</span>
+          <aside className="ppt-thumbnails" aria-label="幻灯片缩略图">
+            <div className="ppt-thumbnail-heading">
+              <span>幻灯片</span>
+              <span>{deck.slides.length}</span>
             </div>
-            {filtered.map((item) => (
-              <button
-                key={deckKey(item)}
-                className={`ppt-deck ${deckKey(deck) === deckKey(item) ? 'selected' : ''}`}
-                aria-pressed={deckKey(deck) === deckKey(item)}
-                onClick={() => {
-                  setSelected(deckKey(item))
-                  setPageName('')
-                  setZoom(false)
-                }}
-              >
-                <span className="ppt-course">{item.course}</span>
-                <strong>{item.title}</strong>
-                <span>
-                  {item.slides.length} 张图片 ·{' '}
-                  {new Date(item.modified).toLocaleDateString('zh-CN')}
-                </span>
-              </button>
-            ))}
+            <div className="ppt-thumbnail-list">
+              {deck.slides.map((slide, position) => (
+                <SlideThumbnail
+                  key={JSON.stringify([
+                    deckKey(deck),
+                    slide.name,
+                    slide.modified,
+                    revision,
+                  ])}
+                  course={deck.course}
+                  title={deck.title}
+                  name={slide.name}
+                  number={position + 1}
+                  selected={position === index}
+                  onClick={() => {
+                    setPageName(slide.name)
+                    setZoom(false)
+                  }}
+                />
+              ))}
+            </div>
           </aside>
           <div className="panel ppt-viewer">
+            <div className="ppt-viewer-toolbar">
+              <label className="ppt-deck-select">
+                <span>课件</span>
+                <select
+                  aria-label="选择课件"
+                  value={deckKey(deck)}
+                  onChange={(event) => {
+                    setSelected(event.target.value)
+                    setPageName('')
+                    setZoom(false)
+                  }}
+                >
+                  {filtered.map((item) => (
+                    <option key={deckKey(item)} value={deckKey(item)}>
+                      {item.course} · {item.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
             <div className="ppt-viewer-heading">
               <div>
                 <span className="ppt-course">{deck.course}</span>
@@ -257,23 +324,6 @@ export function PptPreview() {
                 下一页
                 <ChevronRight size={16} />
               </button>
-            </div>
-            <div className="ppt-pages" aria-label="选择 PPT 页码">
-              {deck.slides.map((slide, position) => (
-                <button
-                  key={slide.name}
-                  title={slide.name}
-                  aria-label={`第 ${slide.name.replace(/\.[^.]+$/, '')} 页`}
-                  aria-current={position === index ? 'page' : undefined}
-                  className={position === index ? 'selected' : ''}
-                  onClick={() => {
-                    setPageName(slide.name)
-                    setZoom(false)
-                  }}
-                >
-                  {slide.name.replace(/\.[^.]+$/, '')}
-                </button>
-              ))}
             </div>
           </div>
         </div>

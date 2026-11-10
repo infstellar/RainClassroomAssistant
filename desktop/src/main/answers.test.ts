@@ -9,7 +9,9 @@ import {
 } from './answers.ts'
 
 test('normalizes one-based choice indexes to service option letters', () => {
-  assert.deepEqual(submissionCandidates(1, [1, '3']), [[['A', 'C']]])
+  assert.deepEqual(submissionCandidates(1, [1, '3']), [['A', 'C']])
+  assert.deepEqual(submissionCandidates(1, ['C']), [['C']])
+  assert.deepEqual(submissionCandidates(2, ['a', 3]), [['A', 'C']])
   assert.throws(() => submissionCandidates(2, [0]), /1到26之间/)
 })
 
@@ -33,6 +35,14 @@ test('retries only the known multi-blank serialization failures', () => {
     false,
   )
   assert.equal(shouldRetrySubmission(4, '', 'permission denied'), false)
+  assert.equal(
+    shouldRetrySubmission(
+      4,
+      '{"code":500,"msg":"JsonArray cannot be cast to String"}',
+      'JsonArray cannot be cast to String',
+    ),
+    true,
+  )
 })
 
 test('keeps answer delay within the active answer window', () => {

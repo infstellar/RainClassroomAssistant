@@ -132,5 +132,7 @@ export class AppLogger {
 }
 
 function normalizeLevel(level: string): LogLevel {
-  return level === 'ERROR' ? 'ERROR' : level === 'WARNING' ? 'WARNING' : 'INFO'
+  return level === 'ERROR' || level === 'WARNING' || level === 'DEBUG'
+    ? level
+    : 'INFO'
 }

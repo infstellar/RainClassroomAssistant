@@ -30,7 +30,7 @@
 
 配置文件以明文保存 `sessionid`、AI API 密钥和邮箱凭据。不要分享配置文件或未脱敏日志。启用 AI 后，题目图片及必要的前置课件页会发送到所配置的模型服务商；请确认有权提供这些内容，并自行评估服务商的数据处理和 API 费用。
 
-日志以 JSONL 顺序写入，保留多行消息结构、自动隐藏常见凭据，并按 10 MB 轮转。界面显示最近 500 条事件，也能读取旧版文本日志。答案缓存使用原子写入；课件题目签名变化时保留旧缓存备份并重新分析。
+日志以 JSONL 顺序写入，保留多行消息结构、自动隐藏常见凭据，并按 10 MB 轮转。界面显示最近 500 条事件，也能读取旧版文本日志。答案缓存使用原子写入；课件题目签名变化时保留旧缓存备份，按题目 ID 保留并迁移已有答案，只对新增或替换的题目重新分析。
 
 ## 开发
 
@@ -69,13 +69,13 @@ GitHub Actions 的 `TypeScript desktop release` 工作流只响应形如 `vMAJOR
 
 ```powershell
 cd desktop
-npm version 0.5.2 --no-git-tag-version
+npm version 0.5.3 --no-git-tag-version
 cd ..
 git add desktop/package.json desktop/package-lock.json
-git commit -m "chore: release v0.5.2"
+git commit -m "chore: release v0.5.3"
 git push origin main
-git tag v0.5.2
-git push origin v0.5.2
+git tag v0.5.3
+git push origin v0.5.3
 ```
 
 首次发布前，请先把整个桌面重构和 `.github/workflows/desktop-*.yml` 合入 `main`。发布任务会核对版本、安装包大小及 SHA-512，生成 `SHA256SUMS.txt`，并在草稿 Release 上传全部文件后公开。任何检查失败都不会公开新版；失败后可重跑工作流，已公开的版本禁止覆盖，应递增版本重新发布。

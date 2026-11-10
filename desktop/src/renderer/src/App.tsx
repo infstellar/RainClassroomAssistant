@@ -2,6 +2,7 @@ import { PptPreview } from './PptPreview'
 import { HelpTip } from './HelpTip'
 import { AiServiceTest } from './AiServiceTest'
 import { QuestionBank } from './QuestionBank'
+import { AiTasks } from './AiTasks'
 import { useAutoSaveConfig } from './useAutoSaveConfig'
 import { useEffect, useMemo, useState } from 'react'
 import {
@@ -37,7 +38,7 @@ import type {
   UpdateState,
 } from '../../shared/contract'
 
-type View = 'overview' | 'logs' | 'settings' | 'ppt' | 'questions'
+type View = 'overview' | 'logs' | 'settings' | 'ppt' | 'questions' | 'ai-tasks'
 
 export default function App() {
   const [view, setView] = useState<View>('overview')
@@ -212,7 +213,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${view === 'ppt' ? 'ppt-workspace' : ''}`}>
       {toast && (
         <div
           className={`save-toast ${toast.kind}`}
@@ -251,6 +252,12 @@ export default function App() {
 
         <div className="workspace-label">工作台</div>
         <nav className="nav-list" aria-label="主导航">
+          <button
+            className={`nav-item ${view === 'ai-tasks' ? 'selected' : ''}`}
+            onClick={() => setView('ai-tasks')}
+          >
+            <Activity size={18} /> AI 任务
+          </button>
           <button
             className={`nav-item ${view === 'questions' ? 'selected' : ''}`}
             onClick={() => setView('questions')}
@@ -309,15 +316,17 @@ export default function App() {
             <span>摸鱼课堂</span>
             <span className="crumb-sep">/</span>
             <strong>
-              {view === 'overview'
-                ? '运行概览'
-                : view === 'logs'
-                  ? '运行日志'
-                  : view === 'ppt'
-                    ? 'PPT 预览'
-                    : view === 'questions'
-                      ? '题库与答案'
-                      : '设置'}
+              {view === 'ai-tasks'
+                ? 'AI 任务'
+                : view === 'overview'
+                  ? '运行概览'
+                  : view === 'logs'
+                    ? '运行日志'
+                    : view === 'ppt'
+                      ? 'PPT 预览'
+                      : view === 'questions'
+                        ? '题库与答案'
+                        : '设置'}
             </strong>
           </div>
           <div className="topbar-actions">
@@ -404,26 +413,30 @@ export default function App() {
                 <span className="eyebrow-line" /> 桌面控制台
               </div>
               <h1>
-                {view === 'overview'
-                  ? '运行概览'
-                  : view === 'logs'
-                    ? '运行日志'
-                    : view === 'questions'
-                      ? '题库与答案'
-                      : view === 'ppt'
-                        ? 'PPT 预览'
-                        : '设置'}
+                {view === 'ai-tasks'
+                  ? 'AI 任务'
+                  : view === 'overview'
+                    ? '运行概览'
+                    : view === 'logs'
+                      ? '运行日志'
+                      : view === 'questions'
+                        ? '题库与答案'
+                        : view === 'ppt'
+                          ? 'PPT 预览'
+                          : '设置'}
               </h1>
               <p>
-                {view === 'overview'
-                  ? '查看监听状态、课堂活动与最近运行事件。'
-                  : view === 'logs'
-                    ? '集中查看应用事件与诊断信息。'
-                    : view === 'questions'
-                      ? '逐题查看课件原图与当前答案。'
-                      : view === 'ppt'
-                        ? '浏览已下载的课件图片，按页查看课堂内容。'
-                        : '管理课堂自动化与 AI 分析参数。'}
+                {view === 'ai-tasks'
+                  ? '查看 AI 请求进度与历史响应记录。'
+                  : view === 'overview'
+                    ? '查看监听状态、课堂活动与最近运行事件。'
+                    : view === 'logs'
+                      ? '集中查看应用事件与诊断信息。'
+                      : view === 'questions'
+                        ? '逐题查看课件原图与当前答案。'
+                        : view === 'ppt'
+                          ? '浏览已下载的课件图片，按页查看课堂内容。'
+                          : '管理课堂自动化与 AI 分析参数。'}
               </p>
             </div>
             <div className="heading-actions">
@@ -489,7 +502,9 @@ export default function App() {
             </span>
           </div>
 
-          {view === 'questions' ? (
+          {view === 'ai-tasks' ? (
+            <AiTasks />
+          ) : view === 'questions' ? (
             <QuestionBank />
           ) : view === 'ppt' ? (
             <PptPreview />
@@ -1569,6 +1584,7 @@ export default function App() {
                       onChange={(event) => setLogLevel(event.target.value)}
                     >
                       <option value="all">全部级别</option>
+                      <option value="DEBUG">调试</option>
                       <option value="INFO">信息</option>
                       <option value="WARNING">警告</option>
                       <option value="ERROR">错误</option>
@@ -1610,13 +1626,6 @@ export default function App() {
               )}
             </section>
           )}
-
-          <footer className="page-footer">
-            <span>摸鱼课堂桌面端</span>
-            <span>
-              本地运行 <i /> 隐私优先
-            </span>
-          </footer>
         </div>
       </main>
       {loginOpen && (

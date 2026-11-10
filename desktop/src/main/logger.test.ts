@@ -41,3 +41,27 @@ test('serializes concurrent multiline logs and reloads records across size rotat
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('persists and reloads DEBUG level with redacted diagnostics', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rainclass-debug-'))
+  try {
+    const logger = new AppLogger(directory, () => undefined)
+    await logger.write(
+      'DEBUG',
+      '自动答题',
+      'payload result=["C"] authorization=secret',
+    )
+    const restored = new AppLogger(directory, () => undefined)
+    await restored.load()
+    assert.equal(restored.list()[0].level, 'DEBUG')
+    assert.match(restored.list()[0].message, /result=\["C"\]/)
+    assert.doesNotMatch(restored.list()[0].message, /secret/)
+    const disk = await readFile(
+      join(directory, 'RainClassroomAssistant.jsonl'),
+      'utf8',
+    )
+    assert.doesNotMatch(disk, /secret/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

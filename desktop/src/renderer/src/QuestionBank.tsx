@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AiHistory } from './AiTasks'
 import type { QuestionDeck, QuestionEntry } from '../../shared/contract'
 
 const statusLabels = {
@@ -29,6 +30,9 @@ export function QuestionBank() {
   const [query, setQuery] = useState('')
   const [onlyUnanswered, setOnlyUnanswered] = useState(false)
   const [revision, setRevision] = useState(0)
+  const [manualDraft, setManualDraft] = useState('')
+  const [savingAnswer, setSavingAnswer] = useState(false)
+  const [answerMessage, setAnswerMessage] = useState('')
 
   useEffect(() => {
     let active = true
@@ -112,6 +116,13 @@ export function QuestionBank() {
   }, [deckId, index, revision])
 
   const question = questions.find((item) => item.index === index)
+  useEffect(() => {
+    if (!question) return
+    setManualDraft(
+      question.source === 'manual' ? formatAnswer(question.answer) : '',
+    )
+    setAnswerMessage('')
+  }, [question?.index, index])
   const deck = decks.find((item) => item.id === deckId)
   const visibleDecks = decks.filter((item) =>
     `${item.lessonName} ${item.title}`
@@ -243,6 +254,63 @@ export function QuestionBank() {
                     <strong>{formatAnswer(question.answer)}</strong>
                   </div>
                 </div>
+                <p className="question-answer-time">
+                  回答状态：{question.answer ? '已回答' : '未回答'} · 回答时间：
+                  {question.answeredAt
+                    ? new Date(question.answeredAt).toLocaleString()
+                    : question.answer
+                      ? '旧记录未保存时间'
+                      : '—'}
+                </p>
+                <p className="question-record-note">
+                  此处记录 AI / 人工答案生成情况，课堂提交结果请查看运行日志。
+                </p>
+                <details className="question-history">
+                  <summary>原始响应记录（{question.aiHistory.length}）</summary>
+                  {question.aiHistory.length ? (
+                    <AiHistory tasks={question.aiHistory} />
+                  ) : (
+                    <p>暂无原始响应记录；旧缓存未保存原始响应。</p>
+                  )}
+                </details>
+                <form
+                  className="manual-answer-editor"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (!window.desktop || savingAnswer) return
+                    setSavingAnswer(true)
+                    setAnswerMessage('')
+                    void window.desktop
+                      .saveManualAnswer(deckId, question.index, manualDraft)
+                      .then((data) => {
+                        setQuestions(data)
+                        setAnswerMessage(
+                          manualDraft.trim()
+                            ? '人工答案已保存'
+                            : '已恢复采用 AI 答案',
+                        )
+                      })
+                      .catch(() => setAnswerMessage('保存失败，请重试'))
+                      .finally(() => setSavingAnswer(false))
+                  }}
+                >
+                  <label htmlFor="manual-answer">手动编辑答案</label>
+                  <div className="manual-answer-controls">
+                    <input
+                      id="manual-answer"
+                      value={manualDraft}
+                      onChange={(event) => setManualDraft(event.target.value)}
+                      placeholder="输入答案；留空后保存可恢复 AI 答案"
+                    />
+                    <button
+                      className="button secondary"
+                      disabled={savingAnswer}
+                    >
+                      {savingAnswer ? '保存中…' : '保存答案'}
+                    </button>
+                  </div>
+                  {answerMessage && <span role="status">{answerMessage}</span>}
+                </form>
               </article>
             )}
           </div>

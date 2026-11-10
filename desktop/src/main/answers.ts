@@ -1,5 +1,16 @@
 export type AnswerValue = unknown
 
+// Shared by AI output validation and cached-answer selection, before submission.
+export function validateAnswerFormat(problemType: number, answer: AnswerValue) {
+  if (!hasUsableAnswer(answer)) throw new Error('答案不能为空')
+  if (problemType !== 1 && problemType !== 2) return
+  const [choices] = submissionCandidates(problemType, answer) as string[][]
+  if (problemType === 1 && choices.length !== 1)
+    throw new Error('单选题必须且只能返回一个选项')
+  if (new Set(choices).size !== choices.length)
+    throw new Error('选择题不能包含重复选项')
+}
+
 export function hasUsableAnswer(answer: AnswerValue) {
   if (Array.isArray(answer))
     return (
@@ -55,7 +66,7 @@ export function submissionCandidates(
       if (!/^[A-Z]$/.test(choice)) throw new Error(`无效选择题选项：${choice}`)
       return choice
     })
-    return [[normalized]]
+    return [normalized]
   }
   if (problemType === 5) {
     const content = (Array.isArray(answer) ? answer : [answer])

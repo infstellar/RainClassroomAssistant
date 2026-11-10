@@ -7,6 +7,7 @@ import {
   remainingAnswerTime,
   shouldRetrySubmission,
   submissionCandidates,
+  validateAnswerFormat,
 } from './answers.ts'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -633,9 +634,38 @@ export class ClassroomRuntime {
   ) {
     const receivedAt = Date.now()
     const problemId = String(event.problemid ?? '')
+    const traceId = `${course.lessonId}:${problemId}:${receivedAt}`
+    await this.logger.write(
+      'DEBUG',
+      '自动答题',
+      `${traceId} 收到答题事件 ${JSON.stringify({
+        course: course.courseName,
+        event,
+        lifecycle,
+        active: this.isActive(lifecycle, course.lessonId),
+      })}`,
+    )
+    if (!problemId || !this.isActive(lifecycle, course.lessonId)) return
+    await this.logger.write(
+      'INFO',
+      '课堂题目',
+      `${course.courseName} 检测到问题，问题ID ${problemId}，开始查找题目与答案`,
+    )
     await this.presentationLoads.get(course.lessonId)
     const problem = this.problemAnswers.get(`${course.lessonId}:${problemId}`)
     const key = `${course.lessonId}:${problem?.id || problemId}`
+    await this.logger.write(
+      'DEBUG',
+      '自动答题',
+      `${traceId} 入队判定 ${JSON.stringify({
+        key,
+        matched: Boolean(problem),
+        answering: this.answering.has(key),
+        submitted: this.submitted.has(key),
+        active: this.isActive(lifecycle, course.lessonId),
+        presentationWaitMs: Date.now() - receivedAt,
+      })}`,
+    )
     if (
       !problemId ||
       !this.isActive(lifecycle, course.lessonId) ||
@@ -660,10 +690,24 @@ export class ClassroomRuntime {
         await this.logger.write(
           'ERROR',
           '自动答题',
-          `${course.courseName} 答题处理失败：${error instanceof Error ? error.message : '未知错误'}`,
+          `${course.courseName} 问题ID ${problemId} 答题处理失败（trace ${traceId}）：${error instanceof Error ? error.message : String(error)}`,
         )
+      await this.logger.write(
+        'DEBUG',
+        '自动答题',
+        `${traceId} 处理异常 ${error instanceof Error ? error.stack : String(error)}`,
+      )
     } finally {
       if (lifecycle === this.lifecycle) this.answering.delete(key)
+      await this.logger.write(
+        'DEBUG',
+        '自动答题',
+        `${traceId} 处理结束 ${JSON.stringify({
+          elapsedMs: Date.now() - receivedAt,
+          submitted: this.submitted.has(key),
+          active: this.isActive(lifecycle, course.lessonId),
+        })}`,
+      )
     }
   }
 
@@ -945,25 +989,76 @@ export class ClassroomRuntime {
     receivedAt: number,
     authorization: string,
   ) {
+    const traceId = `${course.lessonId}:${String(event.problemid ?? '')}:${receivedAt}`
+    const debug = (stage: string, details: unknown) =>
+      this.logger.write(
+        'DEBUG',
+        '自动答题',
+        `${traceId} ${stage} ${JSON.stringify(details)}`,
+      )
     await this.presentationLoads.get(course.lessonId)
     if (!this.isActive(lifecycle, course.lessonId)) return
     const config = await this.getConfig()
     if (!this.isActive(lifecycle, course.lessonId)) return
     const eventProblemId = String(event.problemid ?? '')
     const timeLeft = remainingAnswerTime(event, receivedAt)
-    if (timeLeft <= 0 && timeLeft !== -1) return
+    const expired = async () => {
+      await this.logger.write(
+        'WARNING',
+        '自动答题',
+        `${course.courseName} 问题ID ${eventProblemId} 答题时间已结束，未提交答案`,
+      )
+    }
+    if (timeLeft <= 0 && timeLeft !== -1) {
+      await expired()
+      return
+    }
     const problem = this.problemAnswers.get(
       `${course.lessonId}:${eventProblemId}`,
     )
     const problemId = problem?.id || eventProblemId
-    if (problem?.result !== null && problem?.result !== undefined) return
+    await debug('题目与时间窗口', {
+      problemId,
+      problemType: problem?.problemType,
+      timeLeft,
+      active: this.isActive(lifecycle, course.lessonId),
+      autoAnswer: config.auto_answer,
+      problem: problem && {
+        title: problem.title,
+        index: problem.index,
+        answer: problem.answer,
+        result: problem.result,
+      },
+    })
+    if (problem?.result !== null && problem?.result !== undefined) {
+      await this.logger.write(
+        'INFO',
+        '自动答题',
+        `${course.courseName} 问题ID ${problemId} 已有作答记录，跳过自动回答`,
+      )
+      return
+    }
     if (!config.auto_answer) {
       const message = `${course.courseName} 收到题目，但自动答题已关闭`
       await this.logger.write('INFO', '课堂题目', message)
       void this.speak(message, 'receive_problem')
       return
     }
-    if (problem?.problemType === 3) return
+    if (problem?.problemType === 3) {
+      await this.logger.write(
+        'INFO',
+        '自动答题',
+        `${course.courseName} 问题ID ${problemId} 为投票题，跳过自动回答`,
+      )
+      return
+    }
+    await this.logger.write(
+      problem ? 'INFO' : 'WARNING',
+      '课堂题目',
+      problem
+        ? `${course.courseName} 找到问题：问题ID ${problemId}，${problem.title} 第 ${problem.index} 页，题图${problem.cover ? '有' : '无'}`
+        : `${course.courseName} 问题ID ${problemId} 未匹配到课件题目`,
+    )
     const cached = problem
       ? await this.cachedAnswer(
           course.courseName,
@@ -973,6 +1068,44 @@ export class ClassroomRuntime {
         )
       : undefined
     let answer = hasUsableAnswer(problem?.answer) ? problem?.answer : cached
+    let answerSource = hasUsableAnswer(problem?.answer)
+      ? '课件答案'
+      : '答案缓存'
+    if (problem && hasUsableAnswer(answer)) {
+      try {
+        validateAnswerFormat(problem.problemType, answer)
+      } catch (error) {
+        await this.logger.write(
+          'WARNING',
+          '自动答题',
+          `${course.courseName} 问题ID ${problemId} ${answerSource}格式错误：${error instanceof Error ? error.message : String(error)}，尝试现场 AI 分析`,
+        )
+        answer = undefined
+      }
+    }
+    await debug('答案查找', {
+      courseAnswer: problem?.answer,
+      cached,
+      answer,
+      answerSource,
+    })
+    if (!hasUsableAnswer(answer) && problem) {
+      await this.logger.write(
+        'INFO',
+        '自动答题',
+        `${course.courseName} 问题ID ${problemId} 课件答案与缓存均未命中`,
+      )
+      if (
+        !problem.cover ||
+        !config.enable_ai_analysis ||
+        !config.openai_api_key
+      )
+        await this.logger.write(
+          'WARNING',
+          '自动答题',
+          `${course.courseName} 问题ID ${problemId} 无法现场分析：${!problem.cover ? '缺少题图' : !config.enable_ai_analysis ? 'AI 分析未开启' : '未配置 AI 密钥'}`,
+        )
+    }
     if (
       !hasUsableAnswer(answer) &&
       problem?.cover &&
@@ -989,6 +1122,11 @@ export class ClassroomRuntime {
       )
       const imagePath = slideImagePath(imageDirectory, problem.index)
       try {
+        await this.logger.write(
+          'INFO',
+          'AI 分析',
+          `${course.courseName} 问题ID ${problemId} 缓存未命中，开始下载题图并进行现场分析：${problem.title} 第 ${problem.index} 页`,
+        )
         await downloadSlideImage(problem.cover, imagePath)
         const analyzer = new AiAnalyzer(
           this.getConfig,
@@ -1003,6 +1141,11 @@ export class ClassroomRuntime {
           problem.slides,
           imageDirectory,
         )
+        answerSource = '现场 AI 答案'
+        await debug('现场分析结果', {
+          answer,
+          elapsedMs: Date.now() - receivedAt,
+        })
       } catch (error) {
         await this.logger.write(
           'WARNING',
@@ -1029,7 +1172,15 @@ export class ClassroomRuntime {
       custom?: { percent?: number }
     }
     const remainingBeforeDelay = remainingAnswerTime(event, receivedAt)
-    if (remainingBeforeDelay !== -1 && remainingBeforeDelay <= 0) return
+    await this.logger.write(
+      'INFO',
+      '自动答题',
+      `${course.courseName} 问题ID ${problemId} 使用${answerSource}：${JSON.stringify(answer)}`,
+    )
+    if (remainingBeforeDelay !== -1 && remainingBeforeDelay <= 0) {
+      await expired()
+      return
+    }
     const wait =
       remainingBeforeDelay !== -1 && remainingBeforeDelay < 15
         ? 0
@@ -1038,32 +1189,91 @@ export class ClassroomRuntime {
             Number(delayConfig.type ?? 1),
             Number(delayConfig.custom?.percent ?? 50),
           )
+    await debug('延迟计算', {
+      remainingBeforeDelay,
+      delayConfig,
+      wait,
+      answer,
+      answerSource,
+    })
+    await this.logger.write(
+      'INFO',
+      '自动答题',
+      `${course.courseName} 问题ID ${problemId} ${wait > 0 ? `将在 ${wait} 秒后自动回答` : '将立即自动回答'}，答案为 ${JSON.stringify(answer)}`,
+    )
     if (wait > 0)
       await new Promise((resolve) => setTimeout(resolve, wait * 1000))
     if (
       !this.isActive(lifecycle, course.lessonId) ||
       this.submitted.has(answerKey)
-    )
+    ) {
+      await this.logger.write(
+        'INFO',
+        '自动答题',
+        `${course.courseName} 问题ID ${problemId} 已取消自动回答：${this.submitted.has(answerKey) ? '答案已提交' : '监听已停止或课程已结束'}`,
+      )
       return
+    }
     const remaining = remainingAnswerTime(event, receivedAt)
-    if (remaining !== -1 && remaining <= 0) return
+    if (remaining !== -1 && remaining <= 0) {
+      await expired()
+      return
+    }
     const candidates = submissionCandidates(problem.problemType, answer)
+    await debug('提交候选格式', {
+      problemId,
+      problemType: problem.problemType,
+      candidates,
+    })
     for (const [index, result] of candidates.entries()) {
       const latestConfig = await this.getConfig()
       if (
         !latestConfig.auto_answer ||
         latestConfig.sessionid !== sessionid ||
         !this.isActive(lifecycle, course.lessonId)
-      )
+      ) {
+        await this.logger.write(
+          'INFO',
+          '自动答题',
+          `${course.courseName} 问题ID ${problemId} 已取消自动回答：答题开关、登录账号或监听状态已变化`,
+        )
         return
+      }
       if (
         remainingAnswerTime(event, receivedAt) !== -1 &&
         remainingAnswerTime(event, receivedAt) <= 0
-      )
+      ) {
+        await expired()
         return
-      const response = await fetch(
-        `https://${this.host(region)}/api/v3/lesson/problem/answer`,
-        {
+      }
+      await this.logger.write(
+        'INFO',
+        '自动答题',
+        `${course.courseName} 问题ID ${problemId} 正在提交自动回答${index ? '（重试）' : ''}`,
+      )
+      const url = `https://${this.host(region)}/api/v3/lesson/problem/answer`
+      const body = JSON.stringify({
+        problemId,
+        problemType: problem.problemType,
+        dt: Math.floor(Date.now() / 1000),
+        result,
+      })
+      const startedAt = Date.now()
+      await debug('发送请求', {
+        attempt: index + 1,
+        totalAttempts: candidates.length,
+        method: 'POST',
+        url,
+        contentType: 'application/json',
+        body,
+        timeoutMs: 15000,
+        hasLessonAuthorization: Boolean(authorization),
+        remainingSeconds: remainingAnswerTime(event, receivedAt),
+      })
+      let response: Response
+      let text: string
+      try {
+        response = await fetch(url, {
           method: 'POST',
           headers: {
             Cookie: `sessionid=${sessionid}`,
@@ -1073,43 +1283,103 @@ export class ClassroomRuntime {
               ? { Authorization: `Bearer ${authorization}` }
               : {}),
           },
-          body: JSON.stringify({
-            problemId,
-            problemType: problem.problemType,
-            dt: Math.floor(Date.now() / 1000),
-            result,
-          }),
+          body,
           signal: AbortSignal.timeout(15000),
-        },
-      )
-      if (!this.isActive(lifecycle, course.lessonId)) return
-      const text = await response.text()
+        })
+        await debug('收到响应头', {
+          attempt: index + 1,
+          status: response.status,
+          statusText: response.statusText,
+          contentType: response.headers.get('content-type'),
+          requestId: response.headers.get('x-request-id'),
+          elapsedMs: Date.now() - startedAt,
+        })
+        text = await response.text()
+      } catch (error) {
+        await debug('请求或读取响应异常', {
+          attempt: index + 1,
+          elapsedMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.stack : String(error),
+          outcome: 'unknown',
+          retry: false,
+        })
+        await this.logger.write(
+          'ERROR',
+          '自动答题',
+          `${course.courseName} 问题ID ${problemId} 提交结果未知：请求或读取响应失败，未获成功确认，不自动重试（trace ${traceId}）`,
+        )
+        throw error
+      }
+      await debug('收到响应正文', {
+        attempt: index + 1,
+        status: response.status,
+        elapsedMs: Date.now() - startedAt,
+        body: text,
+        active: this.isActive(lifecycle, course.lessonId),
+      })
+      if (!this.isActive(lifecycle, course.lessonId)) {
+        await debug('停止处理响应', {
+          reason: '监听状态已变化，未更新本地提交状态',
+        })
+        return
+      }
       let payload: { code?: number; msg?: string }
       try {
         payload = JSON.parse(text) as { code?: number; msg?: string }
         if (!payload || typeof payload !== 'object' || Array.isArray(payload))
           throw new Error('答题响应不是对象')
       } catch (error) {
-        if (
+        const retry =
           index + 1 < candidates.length &&
           shouldRetrySubmission(problem.problemType, text, String(error))
-        )
-          continue
-        const message = `${course.courseName} 答题响应解析失败`
+        await debug('响应解析失败', {
+          attempt: index + 1,
+          error: String(error),
+          retry,
+          nextCandidate: retry ? candidates[index + 1] : undefined,
+        })
+        if (retry) continue
+        const responseDetail =
+          text || (error instanceof Error ? error.message : String(error))
+        const message = `${course.courseName} 问题ID ${problemId} ${response.ok ? '提交结果未知，响应格式异常' : '自动回答失败，服务端未确认提交'}（HTTP ${response.status}，尝试 ${index + 1}/${candidates.length}，trace ${traceId}）：${responseDetail}`
         await this.logger.write('ERROR', '自动答题', message)
         void this.notifyAnswerResult(message, config)
         void this.speak(message, 'answer_result')
         return
       }
       const success = response.ok && payload.code === 0
+      const retry =
+        !success &&
+        index + 1 < candidates.length &&
+        shouldRetrySubmission(
+          problem.problemType,
+          text,
+          String(payload.msg ?? ''),
+        )
+      await debug('响应判定', {
+        attempt: index + 1,
+        code: payload.code,
+        msg: payload.msg,
+        success,
+        retry,
+        nextCandidate: retry ? candidates[index + 1] : undefined,
+      })
+      if (retry) continue
       const message = success
-        ? `${course.courseName} 答题提交成功`
-        : `${course.courseName} 答题失败：${String(payload.msg ?? '服务端拒绝')}`
+        ? `${course.courseName} 问题ID ${problemId} 自动回答成功（答题提交成功）`
+        : `${course.courseName} 问题ID ${problemId} 自动回答失败：${String(payload.msg ?? '服务端拒绝')}（HTTP ${response.status}，code ${String(payload.code ?? '未知')}）`
       await this.logger.write(success ? 'INFO' : 'WARNING', '自动答题', message)
       if (success) {
         this.submitted.add(answerKey)
         problem.result = result
       }
+      await debug('提交最终结果', {
+        success,
+        confirmation: success ? 'HTTP成功且code=0' : '服务端未确认成功',
+        submitted: this.submitted.has(answerKey),
+        result: problem.result,
+        attempt: index + 1,
+      })
       void this.notifyAnswerResult(message, config)
       void this.speak(message, 'answer_result')
       return

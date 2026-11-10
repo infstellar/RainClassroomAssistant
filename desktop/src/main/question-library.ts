@@ -1,7 +1,13 @@
+import { listAiTasks } from './ai-tasks.ts'
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { QuestionDeck, QuestionEntry } from '../shared/contract'
-import { cacheMatchesSlides, resolveCachedAnswer } from './answer-cache.ts'
+import {
+  alignAnswerCache,
+  problemSignature,
+  resolveCachedAnswer,
+} from './answer-cache.ts'
+import { writeManualAnswerCache } from './cache-store.ts'
 import {
   safePathComponent,
   slideImagePath,
@@ -127,7 +133,14 @@ export class QuestionLibrary {
   async listQuestions(id: string): Promise<QuestionEntry[]> {
     const deck = await this.deck(id)
     let cache = await json(deck.cachePath)
-    if (deck.slides && !cacheMatchesSlides(cache, deck.slides)) cache = {}
+    if (deck.slides) cache = alignAnswerCache(cache, deck.slides)
+    const history = (await listAiTasks(this.root)).filter(
+      (task) =>
+        task.lessonName === deck.lessonName &&
+        task.title === deck.title &&
+        (!deck.slides ||
+          task.signature === JSON.stringify(problemSignature(deck.slides))),
+    )
     const metadata = record(cache.metadata)
     const ai = record(cache.metadata ? cache.answers : cache)
     const manual = record(cache.manual_answers)
@@ -166,7 +179,19 @@ export class QuestionLibrary {
         const text = [problem.content, problem.title, problem.body].find(
           (item) => typeof item === 'string',
         )
+        const aiHistory = history.filter((task) => task.slideIndex === index)
+        const answeredAt = answer
+          ? manualAnswer
+            ? record(cache.manual_answer_times)[index]
+            : aiHistory.find(
+                (task) =>
+                  task.status === 'completed' &&
+                  JSON.stringify(task.answer) === JSON.stringify(aiAnswer),
+              )?.completedAt
+          : null
         return {
+          answeredAt: typeof answeredAt === 'string' ? answeredAt : null,
+          aiHistory,
           index,
           text: typeof text === 'string' ? text : '',
           aiAnswer,
@@ -174,9 +199,12 @@ export class QuestionLibrary {
           source: answer ? (manualAnswer ? 'manual' : 'ai') : null,
           status: answer
             ? 'answered'
-            : needsContext
+            : needsContext || aiHistory[0]?.error === '上下文不足'
               ? 'context'
-              : Object.hasOwn(manual, index) ||
+              : ['failed', 'interrupted'].includes(
+                    aiHistory[0]?.status ?? '',
+                  ) ||
+                  Object.hasOwn(manual, index) ||
                   metadata.analysis_status === 'failed'
                 ? 'failed'
                 : 'unanswered',
@@ -204,5 +232,23 @@ export class QuestionLibrary {
     } catch {
       return null
     }
+  }
+
+  async saveManualAnswer(id: string, index: string, answer: string) {
+    const deck = await this.deck(id)
+    if (
+      !(await this.listQuestions(id)).some(
+        (question) => question.index === index,
+      )
+    )
+      throw new Error('题目不存在')
+    const value = answer.trim()
+    await writeManualAnswerCache(
+      deck.cachePath,
+      index,
+      value || null,
+      deck.slides,
+    )
+    return this.listQuestions(id)
   }
 }

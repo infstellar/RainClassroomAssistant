@@ -1,3 +1,4 @@
+import { listAiTasks } from './ai-tasks.ts'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -12,6 +13,191 @@ import {
   parseSseEvents,
 } from './ai-analyzer.ts'
 import { defaultConfig } from '../shared/config.ts'
+import { validateAnswerFormat } from './answers.ts'
+import { resolveCachedAnswer } from './answer-cache.ts'
+
+for (const protocol of ['responses', 'chat_completions'] as const) {
+  test(`validates choices and sends correction feedback through ${protocol}`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'rain-ai-format-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const imagePath = join(root, '1.jpg')
+    await writeFile(imagePath, Buffer.from('ffd8ffe000104a464946', 'hex'))
+    let requests = 0
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (_url: unknown, init: RequestInit) => {
+        requests++
+        const answer = requests === 1 ? '["B. 9.378×10^6 LBF/IN"]' : '[2]'
+        if (requests === 2) {
+          assert.match(String(init.body), /无效选择题选项/)
+          assert.match(String(init.body), /B. 9.378×10\^6 LBF\/IN/)
+          assert.match(String(init.body), /data:image/)
+        }
+        return protocol === 'responses'
+          ? new Response(
+              `data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output_text: answer } })}\n\n`,
+              { headers: { 'content-type': 'text/event-stream' } },
+            )
+          : Response.json({ choices: [{ message: { content: answer } }] })
+      },
+    )
+    const config = {
+      ...defaultConfig,
+      enable_ai_analysis: true,
+      openai_api_key: 'key',
+      ai_analysis_settings: {
+        ...defaultConfig.ai_analysis_settings,
+        protocol,
+        max_retries: 1,
+      },
+    }
+    const analyzer = new AiAnalyzer(
+      async () => config,
+      { write: async () => undefined } as never,
+      root,
+    )
+    const slides = [{ index: 1, problem: { problemType: 1, problemId: 'p' } }]
+    assert.deepEqual(
+      await analyzer.analyzeLiveSlide('lesson', 'deck', '1', imagePath, slides),
+      [2],
+    )
+    assert.equal(requests, 2)
+    const [task] = await listAiTasks(root)
+    assert.equal(task.status, 'completed')
+    assert.match(task.attempts[0].error!, /无效选择题选项/)
+    const cache = JSON.parse(
+      await readFile(
+        join(root, 'ai_answers_cache', 'lesson_deck.json'),
+        'utf8',
+      ),
+    )
+    assert.deepEqual(cache.answers, { '1': [2] })
+  })
+}
+
+test('rejects malformed output and invalid choices while preserving free-text answers', () => {
+  for (const text of [
+    'answer: [2]',
+    '[2] extra',
+    '[2',
+    '[B]',
+    '[null]',
+    '[[2]]',
+    '[{}]',
+    '[""]',
+  ])
+    assert.throws(() => parseAnswerArray(text), /答案格式错误/)
+  for (const answer of [[0], [27], ['B. text'], [1, 2], ['A', 1]])
+    assert.throws(() => validateAnswerFormat(1, answer))
+  assert.throws(() => validateAnswerFormat(2, ['A', 1]), /重复/)
+  validateAnswerFormat(2, [1, 'C'])
+  validateAnswerFormat(4, ['9.378×10^6 LBF/IN'])
+  assert.equal(
+    resolveCachedAnswer({ '1': ['B. text'] }, '1', [
+      { index: 1, problem: { problemType: 1 } },
+    ]),
+    undefined,
+  )
+})
+
+test('batch analysis skips invalid old cache and validates context retry answers', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rain-ai-batch-format-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  for (const index of [1, 2])
+    await writeFile(
+      join(root, `${index}.jpg`),
+      Buffer.from('ffd8ffe000104a464946', 'hex'),
+    )
+  await mkdir(join(root, 'ai_answers_cache'))
+  const cachePath = join(root, 'ai_answers_cache', 'lesson_deck.json')
+  await writeFile(
+    cachePath,
+    JSON.stringify({ metadata: {}, answers: { '2': ['B. stale'] } }),
+  )
+  let requests = 0
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: unknown, init: RequestInit) => {
+      requests++
+      if (requests > 1)
+        assert.equal((String(init.body).match(/data:image/g) ?? []).length, 2)
+      if (requests === 3) assert.match(String(init.body), /无效选择题选项/)
+      return Response.json({
+        output_text: ['["上下文不足"]', '["B. invalid"]', '[2]'][requests - 1],
+      })
+    },
+  )
+  const config = {
+    ...defaultConfig,
+    enable_ai_analysis: true,
+    openai_api_key: 'key',
+    ai_analysis_settings: {
+      ...defaultConfig.ai_analysis_settings,
+      max_retries: 1,
+      delay_between_requests: 0,
+    },
+  }
+  const analyzer = new AiAnalyzer(
+    async () => config,
+    { write: async () => undefined } as never,
+    root,
+  )
+  await analyzer.analyzePresentation(
+    'lesson',
+    'deck',
+    [{ index: 1 }, { index: 2, problem: { problemType: 1 } }],
+    root,
+  )
+  assert.equal(requests, 3)
+  assert.deepEqual(JSON.parse(await readFile(cachePath, 'utf8')).answers, {
+    '2': [2],
+  })
+})
+
+test('format retry exhaustion never caches the invalid answer', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rain-ai-bad-format-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(
+    join(root, '1.jpg'),
+    Buffer.from('ffd8ffe000104a464946', 'hex'),
+  )
+  let requests = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    requests++
+    return Response.json({ output_text: '["B. invalid"]' })
+  })
+  const config = {
+    ...defaultConfig,
+    enable_ai_analysis: true,
+    openai_api_key: 'key',
+    ai_analysis_settings: {
+      ...defaultConfig.ai_analysis_settings,
+      max_retries: 1,
+    },
+  }
+  const analyzer = new AiAnalyzer(
+    async () => config,
+    { write: async () => undefined } as never,
+    root,
+  )
+  await assert.rejects(
+    () =>
+      analyzer.analyzeLiveSlide('lesson', 'deck', '1', join(root, '1.jpg'), [
+        { index: 1, problem: { problemType: 1 } },
+      ]),
+    /已用尽 1 次自动重试/,
+  )
+  assert.equal(requests, 2)
+  const [task] = await listAiTasks(root)
+  assert.equal(task.status, 'failed')
+  assert.equal(task.answer, undefined)
+  await assert.rejects(
+    readFile(join(root, 'ai_answers_cache', 'lesson_deck.json')),
+    { code: 'ENOENT' },
+  )
+})
 
 for (const protocol of ['responses', 'chat_completions'] as const) {
   test(`AI service test sends the configured ${protocol} image request even when analysis is disabled`, async (t) => {
@@ -37,9 +223,15 @@ for (const protocol of ['responses', 'chat_completions'] as const) {
           : Response.json({ choices: [{ message: { content: '[1]' } }] })
       },
     )
-    const analyzer = new AiAnalyzer(async () => defaultConfig, {
-      write: async () => undefined,
-    } as never)
+    const root = await mkdtemp(join(tmpdir(), 'rain-service-task-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const analyzer = new AiAnalyzer(
+      async () => defaultConfig,
+      {
+        write: async () => undefined,
+      } as never,
+      root,
+    )
     const result = await analyzer.testService({
       ...defaultConfig,
       enable_ai_analysis: false,
@@ -60,9 +252,15 @@ for (const protocol of ['responses', 'chat_completions'] as const) {
 }
 
 test('AI service test reports auth, connection and malformed-output failures and hides the key', async (t) => {
-  const analyzer = new AiAnalyzer(async () => defaultConfig, {
-    write: async () => undefined,
-  } as never)
+  const root = await mkdtemp(join(tmpdir(), 'rain-service-task-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const analyzer = new AiAnalyzer(
+    async () => defaultConfig,
+    {
+      write: async () => undefined,
+    } as never,
+    root,
+  )
   const config = { ...defaultConfig, openai_api_key: 'private-key' }
   let mode = 'auth'
   let requests = 0
@@ -83,10 +281,7 @@ test('AI service test reports auth, connection and malformed-output failures and
   mode = 'network'
   assert.match((await analyzer.testService(config)).message, /ECONNRESET/)
   mode = 'output'
-  assert.match(
-    (await analyzer.testService(config)).message,
-    /未获得预期测试答案/,
-  )
+  assert.match((await analyzer.testService(config)).message, /答案格式错误/)
   assert.equal(requests, 3)
   assert.match(
     (await analyzer.testService({ ...config, openai_api_key: '' })).message,
@@ -149,6 +344,13 @@ for (const failure of ['network', 'timeout', 'http', 'stream']) {
         [2],
       )
       assert.equal(requests, 2)
+      const [task] = await listAiTasks(root)
+      assert.equal(task.status, 'completed')
+      assert.equal(task.attempts.length, 2)
+      assert.ok(task.attempts[0].error)
+      assert.ok(task.attempts[1].completedAt)
+      if (failure === 'stream')
+        assert.match(task.attempts[0].rawResponse, /output_text.delta/)
       assert.ok(
         logged.some((message) =>
           /deck 第 3 页现场分析.*1 秒后自动重试 1\/2/.test(message),
@@ -531,6 +733,18 @@ test('retries a live answer with earlier slide context when the model requests i
     assert.deepEqual(answer, [1])
     assert.equal(requests, 2)
     assert.equal(contextImageCount, 2)
+    const tasks = await listAiTasks(root)
+    assert.equal(tasks.length, 2)
+    assert.ok(
+      tasks.some(
+        (task) => task.status === 'failed' && task.error === '上下文不足',
+      ),
+    )
+    const success = tasks.find((task) => task.status === 'completed')!
+    assert.equal(success.slideIndex, '5')
+    assert.ok(success.completedAt)
+    assert.equal(success.imageCount, 2)
+    assert.match(success.attempts[0].rawResponse, /output_text/)
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

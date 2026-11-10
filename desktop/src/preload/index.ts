@@ -8,8 +8,11 @@ const desktopBridge: DesktopBridge = {
   openPptFolder: (course, title) =>
     ipcRenderer.invoke('ppt:open-folder', course, title),
   testAi: (config) => ipcRenderer.invoke('ai:test', config),
+  getAiTasks: () => ipcRenderer.invoke('ai:tasks'),
   getQuestionDecks: () => ipcRenderer.invoke('questions:decks'),
   getQuestions: (id) => ipcRenderer.invoke('questions:list', id),
+  saveManualAnswer: (id, index, answer) =>
+    ipcRenderer.invoke('questions:save-answer', id, index, answer),
   getQuestionImage: (id, index) =>
     ipcRenderer.invoke('questions:image', id, index),
   supportsOpenAtLogin: () => ipcRenderer.invoke('startup:supported'),

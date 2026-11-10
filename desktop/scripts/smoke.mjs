@@ -162,6 +162,49 @@ try {
       manual_answers: { 1: [3], 2: [] },
     }),
   )
+  await mkdir(join(root, 'ai_tasks'), { recursive: true })
+  const taskFixture = {
+    id: 'smoke-task',
+    session: 'previous-run',
+    label: '测试课件 第 1 页',
+    lessonName: '测试课程',
+    title: '测试课件',
+    slideIndex: '1',
+    signature: JSON.stringify([
+      { index: '1', id: '' },
+      { index: '2', id: '' },
+    ]),
+    model: 'test-model',
+    protocol: 'responses',
+    imageCount: 1,
+    status: 'completed',
+    startedAt: '2026-11-10T01:00:00Z',
+    completedAt: '2026-11-10T01:00:02Z',
+    answer: [2],
+    attempts: [
+      {
+        number: 1,
+        startedAt: '2026-11-10T01:00:00Z',
+        completedAt: '2026-11-10T01:00:02Z',
+        rawResponse: '{"output_text":"[2]"}',
+      },
+    ],
+  }
+  await writeFile(
+    join(root, 'ai_tasks', 'smoke-task.json'),
+    JSON.stringify(taskFixture),
+  )
+  await page.getByRole('button', { name: 'AI 任务', exact: true }).click()
+  await page.getByRole('heading', { name: 'AI 任务记录' }).waitFor()
+  await page.getByText('测试课件 第 1 页', { exact: true }).waitFor()
+  await page.getByText('查看每次请求与原始响应', { exact: true }).click()
+  assert.match(
+    await page.locator('.ai-attempt pre').textContent(),
+    /output_text/,
+  )
+  await page.screenshot({ path: join(artifacts, 'ai-tasks.png') })
+  await page.getByLabel('筛选 AI 任务').selectOption('active')
+  await page.getByText('当前没有正在进行的 AI 任务', { exact: true }).waitFor()
   await page.getByRole('button', { name: '题库与答案', exact: true }).click()
   await page.getByText('测试题目：请选择正确选项', { exact: true }).waitFor()
   await page.waitForFunction(
@@ -174,6 +217,12 @@ try {
   assert.equal(
     await page.locator('.question-answers strong').nth(1).textContent(),
     '3',
+  )
+  await page.getByText('原始响应记录（1）', { exact: true }).click()
+  await page.getByText('查看每次请求与原始响应', { exact: true }).click()
+  assert.match(
+    await page.locator('.ai-attempt pre').textContent(),
+    /output_text/,
   )
   await page.screenshot({ path: join(artifacts, 'question-bank.png') })
   await page.getByLabel('只看暂无答案').check()

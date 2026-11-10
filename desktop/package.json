@@ -1,6 +1,6 @@
 {
   "name": "rainclassroom-desktop",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "雨课堂桌面助理",
   "author": "infstellar",
   "private": true,
@@ -17,7 +17,7 @@
     "test:answers": "node --experimental-strip-types --test src/main/answers.test.ts",
     "test:answer-cache": "node --experimental-strip-types --test src/main/answer-cache.test.ts src/main/cache-store.test.ts",
     "test:presentation": "node --experimental-strip-types --test src/main/presentation.test.ts",
-    "test:ai": "node --experimental-strip-types --test src/main/ai-analyzer.test.ts src/main/question-library.test.ts",
+    "test:ai": "node --experimental-strip-types --test src/main/ai-analyzer.test.ts src/main/question-library.test.ts src/main/ai-tasks.test.ts",
     "test:notifier": "node --experimental-strip-types --test src/main/notifier.test.ts",
     "test:danmu": "node --experimental-strip-types --test src/main/danmu.test.ts",
     "test:signing": "node --experimental-strip-types --test src/main/signing.test.ts",

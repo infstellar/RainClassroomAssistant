@@ -57,6 +57,8 @@ test('lists manifest questions, manual priority, AI results, missing images and 
     assert.equal((await library.listDecks()).length, 1)
     const questions = await library.listQuestions(deck.id)
     assert.deepEqual(questions[0], {
+      answeredAt: null,
+      aiHistory: [],
       index: '2',
       text: '题目二',
       aiAnswer: [1],
@@ -65,6 +67,30 @@ test('lists manifest questions, manual priority, AI results, missing images and 
       status: 'answered',
     })
     assert.equal(questions[1].status, 'failed')
+    // Live events number the same question differently from the saved manifest.
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        metadata: {
+          problem_signature: [
+            { index: '1', id: 'p2' },
+            { index: '9', id: 'p10' },
+          ],
+        },
+        answers: { '1': [1], '9': [2] },
+        manual_answers: { '1': [3] },
+      }),
+    )
+    const renumbered = await library.listQuestions(deck.id)
+    assert.deepEqual(
+      renumbered.map((q) => [q.index, q.aiAnswer, q.answer]),
+      [
+        ['2', [1], [3]],
+        ['10', [2], [2]],
+      ],
+    )
+    await library.saveManualAnswer(deck.id, '2', 'D')
+    assert.deepEqual((await library.listQuestions(deck.id))[0].answer, ['D'])
     await writeFile(
       cachePath,
       JSON.stringify({

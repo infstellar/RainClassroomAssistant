@@ -1,4 +1,4 @@
-export type LogLevel = 'INFO' | 'WARNING' | 'ERROR'
+export type LogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'
 
 export interface LogEntry {
   id: string
@@ -114,12 +114,18 @@ export interface DownloadedPresentation {
 }
 
 export interface DesktopBridge {
+  getAiTasks(): Promise<AiTask[]>
   getDownloadedPresentations(): Promise<DownloadedPresentation[]>
   getPptImage(course: string, title: string, name: string): Promise<string>
   openPptFolder(course?: string, title?: string): Promise<void>
   testAi(config: AssistantConfig): Promise<AiServiceTestResult>
   getQuestionDecks(): Promise<QuestionDeck[]>
   getQuestions(deckId: string): Promise<QuestionEntry[]>
+  saveManualAnswer(
+    deckId: string,
+    index: string,
+    answer: string,
+  ): Promise<QuestionEntry[]>
   getQuestionImage(deckId: string, index: string): Promise<string | null>
   supportsOpenAtLogin(): Promise<boolean>
   getRuntimeState(): Promise<RuntimeState>
@@ -157,6 +163,8 @@ export interface QuestionDeck {
 }
 
 export interface QuestionEntry {
+  answeredAt: string | null
+  aiHistory: AiTask[]
   index: string
   text: string
   aiAnswer: unknown[] | null
@@ -169,4 +177,31 @@ export interface LoginUpdate {
   status: 'connecting' | 'qr' | 'success' | 'error' | 'closed'
   image?: string
   message?: string
+}
+
+export interface AiAttempt {
+  number: number
+  startedAt: string
+  completedAt?: string
+  rawResponse: string
+  error?: string
+}
+
+export interface AiTask {
+  id: string
+  session: string
+  label: string
+  lessonName?: string
+  title?: string
+  slideIndex?: string
+  signature?: string
+  model: string
+  protocol: string
+  imageCount: number
+  status: 'running' | 'retrying' | 'completed' | 'failed' | 'interrupted'
+  startedAt: string
+  completedAt?: string
+  answer?: unknown[]
+  error?: string
+  attempts: AiAttempt[]
 }

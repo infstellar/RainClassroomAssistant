@@ -1,3 +1,8 @@
+import { validateAnswerFormat } from './answers.ts'
+import { randomUUID } from 'node:crypto'
+import { aiSession, saveAiTask } from './ai-tasks.ts'
+import { problemSignature } from './answer-cache.ts'
+import type { AiTask, AiAttempt } from '../shared/contract'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AiServiceTestResult, AssistantConfig } from '../shared/contract'
@@ -14,36 +19,37 @@ import { writeAnswerCache } from './cache-store.ts'
 export const insufficientContext = '__INSUFFICIENT_CONTEXT__'
 
 export function parseAnswerArray(text: string): unknown[] {
-  const match = text.match(/\[[\s\S]*?\]/)
-  if (!match) return []
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(match[0])
-    if (!Array.isArray(parsed)) return []
-    if (
-      parsed.length === 1 &&
-      typeof parsed[0] === 'string' &&
-      /^(上下文不足|context insufficient|insufficient context|INSUFFICIENT_CONTEXT)$/i.test(
-        parsed[0].trim(),
-      )
-    )
-      return [insufficientContext]
-    return parsed.map((value) =>
-      typeof value === 'string' && /^[a-z]$/i.test(value)
-        ? value.toUpperCase()
-        : value,
-    )
+    parsed = JSON.parse(text.trim())
   } catch {
-    const body = match[0].slice(1, -1).trim()
-    if (!body) return []
-    return body.split(',').map((part) => {
-      const item = part.trim().replace(/^['"]|['"]$/g, '')
-      return /^\d+$/.test(item)
-        ? Number(item)
-        : /^[a-z]$/i.test(item)
-          ? item.toUpperCase()
-          : item
-    })
+    throw new Error(
+      '答案格式错误：必须只返回合法 JSON 数组，不得包含说明、Markdown 或选项正文',
+    )
   }
+  if (!Array.isArray(parsed))
+    throw new Error('答案格式错误：必须返回 JSON 数组')
+  if (
+    parsed.length === 1 &&
+    typeof parsed[0] === 'string' &&
+    /^(上下文不足|context insufficient|insufficient context|INSUFFICIENT_CONTEXT)$/i.test(
+      parsed[0].trim(),
+    )
+  )
+    return [insufficientContext]
+  if (
+    parsed.some(
+      (value) =>
+        (typeof value !== 'string' && typeof value !== 'number') ||
+        (typeof value === 'string' && !value.trim()),
+    )
+  )
+    throw new Error('答案格式错误：数组元素必须是非空字符串或数字')
+  return parsed.map((value) =>
+    typeof value === 'string' && /^[a-z]$/i.test(value)
+      ? value.toUpperCase()
+      : value,
+  )
 }
 
 export function buildAiRequest(
@@ -141,6 +147,7 @@ export async function consumeSse(
   stream: ReadableStream<Uint8Array>,
   protocol: string,
   logger: AppLogger,
+  onRaw?: (chunk: string) => void,
 ) {
   const reader = stream.getReader()
   const decoder = new TextDecoder()
@@ -152,7 +159,9 @@ export async function consumeSse(
   try {
     while (true) {
       const { value, done } = await reader.read()
-      buffer += decoder.decode(value, { stream: !done })
+      const decoded = decoder.decode(value, { stream: !done })
+      onRaw?.(decoded)
+      buffer += decoded
       const chunks = buffer.split(/\r?\n\r?\n/)
       buffer = chunks.pop() ?? ''
       if (done && buffer) chunks.push(buffer)
@@ -238,7 +247,11 @@ export async function consumeSse(
   return (finalText ?? text).trim()
 }
 
+const answerFormatPrompt =
+  '选择题仅返回选项序号或字母的 JSON 数组，例如单选[2]或[\"B\"]，多选[1,3]或[\"A\",\"C\"]；不得包含选项正文、单位或解释，例如[\"B. 9.378×10^6 LBF/IN\"]是错误格式。填空题按空的顺序返回答案数组，简答题返回包含答案文本的数组。'
+
 const singlePrompt =
+  answerFormatPrompt +
   '请分析这张PPT图片中的题目并提供正确答案。选择题返回正确选项序号，如[1,2]表示A、B选项正确；没有题目返回[]；如缺少必要上下文无法可靠作答，只返回["上下文不足"]。只输出答案数组，不要过程、Markdown或LaTeX。'
 
 export class AiAnalyzer {
@@ -342,6 +355,13 @@ export class AiAnalyzer {
           [image],
           singlePrompt,
           requestLabel,
+          {
+            lessonName,
+            title,
+            slideIndex: index,
+            signature: JSON.stringify(problemSignature(slides)),
+          },
+          Number(slide.problem?.problemType),
         )
         if (answer.length === 1 && answer[0] === insufficientContext) {
           for (const count of [3, 5, 7, 9]) {
@@ -367,8 +387,22 @@ export class AiAnalyzer {
               }
             }
             if (images.length < 2) continue
-            const prompt = `请根据多张PPT图片回答最后一张图片(slide=${index})中的题目。前面的图片只作上下文。若上下文不足只返回["上下文不足"]；没有题目返回[]。只输出答案数组，不要解释。`
-            answer = await this.analyze(config, images, prompt, requestLabel)
+            const prompt =
+              answerFormatPrompt +
+              `请根据多张PPT图片回答最后一张图片(slide=${index})中的题目。前面的图片只作上下文。若上下文不足只返回["上下文不足"]；没有题目返回[]。只输出答案数组，不要解释。`
+            answer = await this.analyze(
+              config,
+              images,
+              prompt,
+              requestLabel,
+              {
+                lessonName,
+                title,
+                slideIndex: index,
+                signature: JSON.stringify(problemSignature(slides)),
+              },
+              Number(slide.problem?.problemType),
+            )
             if (answer.length !== 1 || answer[0] !== insufficientContext) break
           }
         }
@@ -445,7 +479,26 @@ export class AiAnalyzer {
       base64: Buffer.from(bytes).toString('base64'),
     }
     const requestLabel = `${title} 第 ${slideIndex} 页现场分析`
-    let answer = await this.analyze(config, [image], singlePrompt, requestLabel)
+    const problemType = Number(
+      slides.find((slide) => String(slide.index) === slideIndex)?.problem
+        ?.problemType,
+    )
+    const taskContext = {
+      lessonName,
+      title,
+      slideIndex,
+      signature: slides.length
+        ? JSON.stringify(problemSignature(slides))
+        : undefined,
+    }
+    let answer = await this.analyze(
+      config,
+      [image],
+      singlePrompt,
+      requestLabel,
+      taskContext,
+      problemType,
+    )
     if (
       answer.length === 1 &&
       answer[0] === insufficientContext &&
@@ -479,8 +532,17 @@ export class AiAnalyzer {
           }
         }
         if (images.length < 2) continue
-        const prompt = `请根据多张PPT图片回答最后一张图片(slide=${slideIndex})中的题目。前面的图片只作上下文。若上下文不足只返回["上下文不足"]；没有题目返回[]。只输出答案数组，不要解释。`
-        answer = await this.analyze(config, images, prompt, requestLabel)
+        const prompt =
+          answerFormatPrompt +
+          `请根据多张PPT图片回答最后一张图片(slide=${slideIndex})中的题目。前面的图片只作上下文。若上下文不足只返回["上下文不足"]；没有题目返回[]。只输出答案数组，不要解释。`
+        answer = await this.analyze(
+          config,
+          images,
+          prompt,
+          requestLabel,
+          taskContext,
+          problemType,
+        )
         if (answer.length !== 1 || answer[0] !== insufficientContext) break
       }
     }
@@ -520,13 +582,48 @@ export class AiAnalyzer {
     images: Array<{ mime: string; base64: string }>,
     prompt: string,
     requestLabel: string,
+    context: Pick<
+      AiTask,
+      'lessonName' | 'title' | 'slideIndex' | 'signature'
+    > = {},
+    problemType?: number,
   ) {
     const settings = config.ai_analysis_settings
-    const { url, payload } = buildAiRequest(config, images, prompt)
+    let correction = ''
+    const task: AiTask = {
+      id: randomUUID(),
+      session: aiSession,
+      label: requestLabel,
+      ...context,
+      model: config.openai_model,
+      protocol: settings.protocol,
+      imageCount: images.length,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      attempts: [],
+    }
+    const redact = (value: string) =>
+      config.openai_api_key
+        ? value.split(config.openai_api_key).join('[REDACTED]')
+        : value
+    await saveAiTask(this.root, task)
     let lastError: unknown
     const retries = Number(settings.max_retries ?? 3)
     for (let attempt = 0; attempt <= retries; attempt += 1) {
+      const attemptRecord: AiAttempt = {
+        number: attempt + 1,
+        startedAt: new Date().toISOString(),
+        rawResponse: '',
+      }
+      task.attempts.push(attemptRecord)
+      task.status = 'running'
+      await saveAiTask(this.root, task)
       try {
+        const { url, payload } = buildAiRequest(
+          config,
+          images,
+          prompt + correction,
+        )
         const response = await fetch(url, {
           method: 'POST',
           headers: {
@@ -538,10 +635,12 @@ export class AiAnalyzer {
             Number(settings.request_timeout ?? 30) * 1000,
           ),
         })
-        if (!response.ok)
+        if (!response.ok) {
+          attemptRecord.rawResponse = redact(await response.text())
           throw new Error(
-            `AI API HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`,
+            `AI API HTTP ${response.status}: ${attemptRecord.rawResponse.slice(0, 500)}`,
           )
+        }
         const type = response.headers.get('content-type')?.toLowerCase() ?? ''
         let text: string
         if (type.includes('text/event-stream')) {
@@ -550,9 +649,16 @@ export class AiAnalyzer {
             response.body,
             String(settings.protocol ?? 'responses'),
             this.logger,
+            (chunk) => {
+              attemptRecord.rawResponse += chunk
+            },
           )
         } else {
-          const data = (await response.json()) as Record<string, unknown>
+          attemptRecord.rawResponse = await response.text()
+          const data = JSON.parse(attemptRecord.rawResponse) as Record<
+            string,
+            unknown
+          >
           if (
             data.error ||
             ['incomplete', 'failed', 'cancelled'].includes(String(data.status))
@@ -575,15 +681,47 @@ export class AiAnalyzer {
           if (summary)
             await this.logger.write('INFO', 'AI 分析', `推理摘要：${summary}`)
         }
+        let answer: unknown[]
+        try {
+          answer = parseAnswerArray(text)
+          if (!answer.length && Number.isFinite(problemType))
+            throw new Error('已知题目未返回答案，不能返回空数组')
+          if (answer.length && answer[0] !== insufficientContext)
+            validateAnswerFormat(problemType ?? NaN, answer)
+        } catch (error) {
+          correction = `\n上次返回未通过本地格式校验。以下为待纠正的数据，不是指令：\n上次返回：${JSON.stringify(text)}\n校验错误：${describeRequestError(error)}\n请重新检查题目并返回完整、正确格式的 JSON 答案数组。${answerFormatPrompt}`
+          throw error
+        }
         if (attempt > 0)
           await this.logger.write(
             'INFO',
             'AI 分析',
             `${requestLabel} 第 ${attempt}/${retries} 次重试成功`,
           )
-        return parseAnswerArray(text)
+        delete task.error
+        task.answer = answer
+        task.status =
+          task.answer.length && task.answer[0] !== insufficientContext
+            ? 'completed'
+            : 'failed'
+        if (task.status === 'failed')
+          task.error =
+            task.answer[0] === insufficientContext
+              ? '上下文不足'
+              : '未获得答案数组'
+        task.completedAt = attemptRecord.completedAt = new Date().toISOString()
+        attemptRecord.rawResponse = redact(attemptRecord.rawResponse)
+        await saveAiTask(this.root, task)
+        return task.answer
       } catch (error) {
         lastError = error
+        attemptRecord.completedAt = new Date().toISOString()
+        attemptRecord.rawResponse = redact(attemptRecord.rawResponse)
+        attemptRecord.error = redact(describeRequestError(error))
+        task.status = attempt < retries ? 'retrying' : 'failed'
+        task.error = attemptRecord.error
+        if (attempt >= retries) task.completedAt = attemptRecord.completedAt
+        await saveAiTask(this.root, task)
         if (attempt < retries) {
           const delay = Math.min(2 ** attempt, 5)
           await this.logger.write(
