@@ -1,5 +1,6 @@
 import { listAiTasks } from './ai-tasks.ts'
-import { readFile, readdir } from 'node:fs/promises'
+import { listAnswerSubmissions } from './answer-submissions.ts'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { QuestionDeck, QuestionEntry } from '../shared/contract'
 import {
@@ -33,6 +34,7 @@ async function entries(path: string) {
 }
 
 interface DeckRecord extends QuestionDeck {
+  modified: number
   imageDirectory: string
   cachePath: string
   slides?: SlideData[]
@@ -51,6 +53,7 @@ export class QuestionLibrary {
       title: string,
       cachePath: string,
       imageDirectory: string,
+      modified: number,
       slides?: SlideData[],
     ) => {
       const id = Buffer.from(cachePath).toString('base64url')
@@ -60,6 +63,7 @@ export class QuestionLibrary {
         title,
         cachePath,
         imageDirectory,
+        modified,
         slides,
       })
     }
@@ -85,6 +89,7 @@ export class QuestionLibrary {
           safePathComponent(lesson, '未知课程'),
           safePathComponent(title),
         ),
+        (await stat(cachePath).catch(() => null))?.mtimeMs ?? 0,
       )
     }
     for (const lesson of await entries(imageRoot)) {
@@ -106,6 +111,8 @@ export class QuestionLibrary {
           String(manifest.title ?? deck.name),
           join(cacheRoot, `${lesson.name}_${deck.name}.json`),
           directory,
+          (await stat(join(directory, 'presentation.json')).catch(() => null))
+            ?.mtimeMs ?? 0,
           slides,
         )
       }
@@ -115,13 +122,15 @@ export class QuestionLibrary {
 
   async listDecks(): Promise<QuestionDeck[]> {
     return [...(await this.catalog()).values()]
-      .map(({ id, lessonName, title }) => ({ id, lessonName, title }))
-      .sort((a, b) =>
-        `${a.lessonName}${a.title}`.localeCompare(
-          `${b.lessonName}${b.title}`,
-          'zh-CN',
-        ),
+      .sort(
+        (a, b) =>
+          b.modified - a.modified ||
+          `${a.lessonName}${a.title}`.localeCompare(
+            `${b.lessonName}${b.title}`,
+            'zh-CN',
+          ),
       )
+      .map(({ id, lessonName, title }) => ({ id, lessonName, title }))
   }
 
   private async deck(id: string) {
@@ -142,6 +151,13 @@ export class QuestionLibrary {
           task.signature === JSON.stringify(problemSignature(deck.slides))),
     )
     const metadata = record(cache.metadata)
+    const submissions = (await listAnswerSubmissions(this.root)).filter(
+      (entry) =>
+        entry.lessonName === deck.lessonName && entry.title === deck.title,
+    )
+    const signature = deck.slides
+      ? problemSignature(deck.slides)
+      : metadata.problem_signature
     const ai = record(cache.metadata ? cache.answers : cache)
     const manual = record(cache.manual_answers)
     const indexes = deck.slides
@@ -180,17 +196,21 @@ export class QuestionLibrary {
           (item) => typeof item === 'string',
         )
         const aiHistory = history.filter((task) => task.slideIndex === index)
-        const answeredAt = answer
-          ? manualAnswer
-            ? record(cache.manual_answer_times)[index]
-            : aiHistory.find(
-                (task) =>
-                  task.status === 'completed' &&
-                  JSON.stringify(task.answer) === JSON.stringify(aiAnswer),
-              )?.completedAt
-          : null
+        const problemId = Array.isArray(signature)
+          ? String(
+              record(
+                signature.find((item) => String(record(item).index) === index),
+              ).id ?? '',
+            )
+          : ''
+        const submission = submissions.find((entry) =>
+          problemId
+            ? entry.problemId === problemId
+            : entry.slideIndex === index,
+        )
         return {
-          answeredAt: typeof answeredAt === 'string' ? answeredAt : null,
+          submissionSentAt: submission?.sentAt ?? null,
+          submissionStatus: submission?.status ?? null,
           aiHistory,
           index,
           text: typeof text === 'string' ? text : '',

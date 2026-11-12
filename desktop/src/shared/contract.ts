@@ -163,7 +163,9 @@ export interface QuestionDeck {
 }
 
 export interface QuestionEntry {
-  answeredAt: string | null
+  /** Time the latest answer submission request was sent to Rain Classroom. */
+  submissionSentAt: string | null
+  submissionStatus: 'sent' | 'success' | 'failed' | 'unknown' | null
   aiHistory: AiTask[]
   index: string
   text: string

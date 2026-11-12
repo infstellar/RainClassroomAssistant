@@ -255,15 +255,22 @@ export function QuestionBank() {
                   </div>
                 </div>
                 <p className="question-answer-time">
-                  回答状态：{question.answer ? '已回答' : '未回答'} · 回答时间：
-                  {question.answeredAt
-                    ? new Date(question.answeredAt).toLocaleString()
-                    : question.answer
-                      ? '旧记录未保存时间'
-                      : '—'}
+                  提交状态：
+                  {question.submissionStatus
+                    ? {
+                        sent: '请求已发出，尚无确认结果',
+                        success: '提交成功',
+                        failed: '提交失败',
+                        unknown: '提交结果未知',
+                      }[question.submissionStatus]
+                    : '暂无提交记录'}{' '}
+                  · 请求发送时间：
+                  {question.submissionSentAt
+                    ? new Date(question.submissionSentAt).toLocaleString()
+                    : '未记录'}
                 </p>
                 <p className="question-record-note">
-                  此处记录 AI / 人工答案生成情况，课堂提交结果请查看运行日志。
+                  时间为最近一次向雨课堂发送答案提交请求的时刻；旧记录未保存提交时间，详细结果请查看运行日志。
                 </p>
                 <details className="question-history">
                   <summary>原始响应记录（{question.aiHistory.length}）</summary>

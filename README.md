@@ -17,6 +17,7 @@
 - 扫码登录四个雨课堂平台，恢复已保存会话并轮询进行中的课程。
 - 按配置延迟加入课堂，接收课件、题目、点名和弹幕事件。
 - 下载课件图片并生成 PDF；缓存课程答案并支持 AI 视觉分析。
+- 监听到老师切换课件时自动下载，完成后按现有 AI 设置分析题目；重复翻页或切回已加载课件不会重复启动任务。课件更新会刷新图片并复用仍有效的答案缓存。
 - AI 服务配置支持发送图片测试请求，显示耗时和具体错误；分析失败时记录自动重试进度。
 - 在“题库与答案”查看题目原图、AI 答案和当前采用答案，筛选无答案题目并自动刷新分析结果。
 - 在工作台“PPT 预览”搜索已下载课件、切换页码、放大查看或打开图片目录；新课件下载后点击“刷新课件”显示。
@@ -69,13 +70,13 @@ GitHub Actions 的 `TypeScript desktop release` 工作流只响应形如 `vMAJOR
 
 ```powershell
 cd desktop
-npm version 0.5.3 --no-git-tag-version
+npm version 0.5.4 --no-git-tag-version
 cd ..
 git add desktop/package.json desktop/package-lock.json
-git commit -m "chore: release v0.5.3"
+git commit -m "chore: release v0.5.4"
 git push origin main
-git tag v0.5.3
-git push origin v0.5.3
+git tag v0.5.4
+git push origin v0.5.4
 ```
 
 首次发布前，请先把整个桌面重构和 `.github/workflows/desktop-*.yml` 合入 `main`。发布任务会核对版本、安装包大小及 SHA-512，生成 `SHA256SUMS.txt`，并在草稿 Release 上传全部文件后公开。任何检查失败都不会公开新版；失败后可重跑工作流，已公开的版本禁止覆盖，应递增版本重新发布。

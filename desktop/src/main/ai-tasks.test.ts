@@ -8,7 +8,7 @@ import { aiSession, listAiTasks, saveAiTask } from './ai-tasks.ts'
 import { QuestionLibrary } from './question-library.ts'
 import { defaultConfig } from '../shared/config.ts'
 
-test('tracks active requests, raw SSE and question answer times', async (t) => {
+test('tracks AI history without treating AI or manual answers as submissions', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'rain-task-history-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const directory = join(root, 'downloads', 'rainclasscache', 'course', 'deck')
@@ -52,14 +52,15 @@ test('tracks active requests, raw SSE and question answer times', async (t) => {
   const library = new QuestionLibrary(root)
   const [deck] = await library.listDecks()
   const [question] = await library.listQuestions(deck.id)
-  assert.equal(question.answeredAt, task.completedAt)
+  assert.equal(question.submissionSentAt, null)
+  assert.equal(question.submissionStatus, null)
   assert.equal(question.aiHistory[0].id, task.id)
   const [manual] = await library.saveManualAnswer(deck.id, '1', 'C')
   assert.equal(manual.source, 'manual')
-  assert.ok(manual.answeredAt)
+  assert.equal(manual.submissionSentAt, null)
   assert.equal(manual.aiHistory.length, 1)
   const [restored] = await library.saveManualAnswer(deck.id, '1', '')
-  assert.equal(restored.answeredAt, task.completedAt)
+  assert.equal(restored.submissionSentAt, null)
   await writeFile(
     join(directory, 'presentation.json'),
     JSON.stringify({

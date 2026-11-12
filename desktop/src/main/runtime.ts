@@ -27,6 +27,11 @@ import {
   normalizePresentationSlides,
 } from './slides.ts'
 import { isNetworkFailure } from './network.ts'
+import { randomUUID } from 'node:crypto'
+import {
+  saveAnswerSubmission,
+  type AnswerSubmission,
+} from './answer-submissions.ts'
 
 const hosts = [
   'www.yuketang.cn',
@@ -36,6 +41,26 @@ const hosts = [
 ]
 const userAgent =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0'
+
+export function presentationIdFromEvent(event: Record<string, unknown>) {
+  const slide =
+    event.slide && typeof event.slide === 'object'
+      ? (event.slide as Record<string, unknown>)
+      : undefined
+  for (const value of [
+    event.presentation,
+    event.pres,
+    event.presentationId,
+    event.presentation_id,
+    slide?.pres,
+    slide?.presentation,
+  ]) {
+    if (typeof value === 'string' && value.trim()) return value
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+      return String(value)
+  }
+  return undefined
+}
 
 export class ClassroomRuntime {
   private timer: NodeJS.Timeout | null = null
@@ -72,6 +97,8 @@ export class ClassroomRuntime {
     }
   >()
   private presentationLoads = new Map<string, Promise<void>>()
+  private indexedPresentations = new Set<string>()
+  private presentationJobs = new Map<string, Promise<void>>()
   private danmuFollowers = new Map<string, DanmuFollower>()
   private classmates = new Map<string, { schoolNumber: string; name: string }>()
   private problemDisplayIndexes = new Map<
@@ -215,6 +242,8 @@ export class ClassroomRuntime {
     this.lessons.clear()
     this.joiningLessons.clear()
     this.presentationLoads.clear()
+    this.indexedPresentations.clear()
+    this.presentationJobs.clear()
     this.problemAnswers.clear()
     this.problemDisplayIndexes.clear()
     this.danmuFollowers.clear()
@@ -492,16 +521,27 @@ export class ClassroomRuntime {
             )
           } else if (
             event.op === 'presentationupdated' ||
-            event.op === 'presentationcreated'
+            event.op === 'presentationcreated' ||
+            event.op === 'showpresentation' ||
+            event.op === 'slidenav'
           ) {
-            const presentationId = event.presentation
-            if (presentationId === undefined || presentationId === null) {
+            const presentationId = presentationIdFromEvent(event)
+            if (presentationId === undefined) {
+              // Navigation may omit the deck ID when only the page changes.
+              if (event.op === 'slidenav') return
               void this.logger.write(
                 'WARNING',
                 '课件题库',
-                `${course.courseName} ${String(event.op)} 消息缺少 presentation 字段`,
+                `${course.courseName} ${String(event.op)} 消息缺少课件 ID，字段：${Object.keys(event).join(', ')}`,
               )
             } else {
+              if (
+                event.op !== 'presentationupdated' &&
+                this.indexedPresentations.has(
+                  JSON.stringify([course.lessonId, presentationId]),
+                )
+              )
+                return
               const indexing = Promise.resolve(
                 this.presentationLoads.get(course.lessonId),
               ).then(() =>
@@ -516,10 +556,11 @@ export class ClassroomRuntime {
                 ),
               )
               this.presentationLoads.set(course.lessonId, indexing)
-              void this.speak(
-                `${course.courseName}有课件${event.op === 'presentationupdated' ? '更新' : '新增'}`,
-                'course_info',
-              )
+              if (event.op !== 'slidenav')
+                void this.speak(
+                  `${course.courseName}有课件${event.op === 'presentationupdated' ? '更新' : event.op === 'presentationcreated' ? '新增' : '切换'}`,
+                  'course_info',
+                )
             }
           } else if (event.op === 'unlockproblem') {
             const problem = event.problem as Record<string, unknown> | undefined
@@ -843,6 +884,9 @@ export class ClassroomRuntime {
     )
     if (event.presentation) ids.add(String(event.presentation))
     for (const id of ids) {
+      if (!this.isActive(lifecycle, course.lessonId)) return
+      const key = JSON.stringify([course.lessonId, id])
+      if (!forceRefresh && this.indexedPresentations.has(key)) continue
       try {
         const result = await this.request(
           `/api/v3/lesson/presentation/fetch?presentation_id=${encodeURIComponent(id)}`,
@@ -852,6 +896,8 @@ export class ClassroomRuntime {
         )
         if (!this.isActive(lifecycle, course.lessonId)) return
         const data = result.data as Record<string, unknown> | undefined
+        if (result.code !== 0 || !Array.isArray(data?.slides))
+          throw new Error('课件服务未返回有效课件')
         const slides = Array.isArray(data?.slides)
           ? ((data.slides as Record<string, unknown>[]).filter(
               (slide) => slide.index !== undefined && slide.index !== null,
@@ -908,15 +954,30 @@ export class ClassroomRuntime {
           height > 0 &&
           width <= 20000 &&
           height <= 20000
-        )
-          void this.processPresentation(
-            normalizedSlides,
-            presentationTitle,
-            courseName,
-            width,
-            height,
-            forceRefresh,
-          )
+        ) {
+          this.indexedPresentations.add(key)
+          // Keep metadata ready for answers while serializing downloads and AI
+          // for the same deck, including updates arriving during analysis.
+          const job = Promise.resolve(this.presentationJobs.get(key))
+            .then(async () => {
+              if (!this.isActive(lifecycle, course.lessonId)) return
+              const completed = await this.processPresentation(
+                normalizedSlides,
+                presentationTitle,
+                courseName,
+                width,
+                height,
+                forceRefresh,
+              )
+              if (!completed && this.isActive(lifecycle, course.lessonId))
+                this.indexedPresentations.delete(key)
+            })
+            .finally(() => {
+              if (this.presentationJobs.get(key) === job)
+                this.presentationJobs.delete(key)
+            })
+          this.presentationJobs.set(key, job)
+        }
         await this.logger.write(
           'INFO',
           '课件题库',
@@ -961,21 +1022,24 @@ export class ClassroomRuntime {
         this.logger,
         this.dataDirectory(),
       )
-      void analyzer
+      await analyzer
         .analyzePresentation(lessonName, title, slides, result.imageDirectory)
-        .catch((error) =>
-          this.logger.write(
+        .catch(async (error) => {
+          await this.logger.write(
             'ERROR',
             'AI 分析',
             `${title} 分析失败：${error instanceof Error ? error.message : '未知错误'}`,
-          ),
-        )
+          )
+          throw error
+        })
+      return true
     } catch {
       await this.logger.write(
         'WARNING',
         '课件下载',
-        `${lessonName}：${title} 下载或 PDF 生成失败`,
+        `${lessonName}：${title} 下载、PDF 生成或分析失败，下次课件事件将重试`,
       )
+      return false
     }
   }
 
@@ -1272,8 +1336,31 @@ export class ClassroomRuntime {
       })
       let response: Response
       let text: string
+      const submission: AnswerSubmission = {
+        id: randomUUID(),
+        lessonName: course.courseName,
+        lessonId: course.lessonId,
+        title: problem.title,
+        slideIndex: problem.index,
+        problemId,
+        sentAt: '',
+        status: 'sent',
+      }
+      const persistSubmission = async (status: AnswerSubmission['status']) => {
+        submission.status = status
+        try {
+          await saveAnswerSubmission(this.dataDirectory(), submission)
+        } catch {
+          await this.logger.write(
+            'WARNING',
+            '自动答题',
+            '无法保存答题请求记录，请查看运行日志中的提交结果',
+          )
+        }
+      }
       try {
-        response = await fetch(url, {
+        submission.sentAt = new Date().toISOString()
+        const request = fetch(url, {
           method: 'POST',
           headers: {
             Cookie: `sessionid=${sessionid}`,
@@ -1286,6 +1373,10 @@ export class ClassroomRuntime {
           body,
           signal: AbortSignal.timeout(15000),
         })
+        // Handle early rejection while the request timestamp is being persisted.
+        void request.catch(() => undefined)
+        await persistSubmission('sent')
+        response = await request
         await debug('收到响应头', {
           attempt: index + 1,
           status: response.status,
@@ -1296,6 +1387,7 @@ export class ClassroomRuntime {
         })
         text = await response.text()
       } catch (error) {
+        await persistSubmission('unknown')
         await debug('请求或读取响应异常', {
           attempt: index + 1,
           elapsedMs: Date.now() - startedAt,
@@ -1318,6 +1410,7 @@ export class ClassroomRuntime {
         active: this.isActive(lifecycle, course.lessonId),
       })
       if (!this.isActive(lifecycle, course.lessonId)) {
+        await persistSubmission('unknown')
         await debug('停止处理响应', {
           reason: '监听状态已变化，未更新本地提交状态',
         })
@@ -1329,6 +1422,7 @@ export class ClassroomRuntime {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload))
           throw new Error('答题响应不是对象')
       } catch (error) {
+        await persistSubmission(response.ok ? 'unknown' : 'failed')
         const retry =
           index + 1 < candidates.length &&
           shouldRetrySubmission(problem.problemType, text, String(error))
@@ -1348,6 +1442,7 @@ export class ClassroomRuntime {
         return
       }
       const success = response.ok && payload.code === 0
+      await persistSubmission(success ? 'success' : 'failed')
       const retry =
         !success &&
         index + 1 < candidates.length &&
